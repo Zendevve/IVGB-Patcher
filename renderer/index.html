@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';">
+    <title>PE Editor</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="header-left">
+                <h1 class="app-title">PE Editor</h1>
+                <span class="app-version">v1.0.0</span>
+            </div>
+            <div class="header-right">
+                <button class="btn btn-primary" id="btn-open">
+                    <span class="icon">📂</span> Open File
+                </button>
+                <button class="btn btn-secondary" id="btn-save" disabled>
+                    <span class="icon">💾</span> Save
+                </button>
+                <button class="btn btn-secondary" id="btn-save-as" disabled>
+                    <span class="icon">📄</span> Save As
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Sidebar -->
+            <aside class="sidebar">
+                <div class="sidebar-section">
+                    <h3 class="section-title">Quick Actions</h3>
+                    <div class="action-buttons">
+                        <button class="action-btn" id="btn-laa" disabled>
+                            <span class="action-icon">⚡</span>
+                            <span class="action-text">Apply LAA</span>
+                        </button>
+                        <button class="action-btn" id="btn-aslr" disabled>
+                            <span class="action-icon">🛡️</span>
+                            <span class="action-text">Toggle ASLR</span>
+                        </button>
+                        <button class="action-btn" id="btn-dep" disabled>
+                            <span class="action-icon">🔒</span>
+                            <span class="action-text">Toggle DEP</span>
+                        </button>
+                        <button class="action-btn" id="btn-cfg" disabled>
+                            <span class="action-icon">⚙️</span>
+                            <span class="action-text">Toggle CFG</span>
+                        </button>
+                        <button class="action-btn" id="btn-hex-diff" disabled>
+                            <span class="action-icon">🔀</span>
+                            <span class="action-text">Hex Diff</span>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3 class="section-title">Batch Operations</h3>
+                    <button class="btn btn-full" id="btn-batch">
+                        <span class="icon">📚</span> Batch Process
+                    </button>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3 class="section-title">Security Status</h3>
+                    <div class="security-flags" id="security-flags">
+                        <div class="flag-item">
+                            <span class="flag-label">LAA</span>
+                            <span class="flag-status" id="flag-laa">-</span>
+                        </div>
+                        <div class="flag-item">
+                            <span class="flag-label">ASLR</span>
+                            <span class="flag-status" id="flag-aslr">-</span>
+                        </div>
+                        <div class="flag-item">
+                            <span class="flag-label">DEP</span>
+                            <span class="flag-status" id="flag-dep">-</span>
+                        </div>
+                        <div class="flag-item">
+                            <span class="flag-label">CFG</span>
+                            <span class="flag-status" id="flag-cfg">-</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3 class="section-title">Export</h3>
+                    <button class="btn btn-full" id="btn-export" disabled>
+                        <span class="icon">📊</span> Export Report
+                    </button>
+                </div>
+            </aside>
+
+            <!-- Content Area -->
+            <div class="content-area">
+                <!-- Welcome Screen -->
+                <div class="welcome-screen" id="welcome-screen">
+                    <div class="welcome-content">
+                        <div class="welcome-icon">📁</div>
+                        <h2>Welcome to PE Editor</h2>
+                        <p>Open a PE file to get started</p>
+                        <button class="btn btn-large btn-primary" id="btn-welcome-open">
+                            <span class="icon">📂</span> Open PE File
+                        </button>
+                    </div>
+                </div>
+
+                <!-- PE Info Panel (Hidden by default) -->
+                <div class="pe-info-panel hidden" id="pe-info-panel">
+                    <!-- File Info -->
+                    <div class="info-card">
+                        <h3 class="card-title">File Information</h3>
+                        <div class="info-grid" id="file-info">
+                            <!-- Populated by JS -->
+                        </div>
+                    </div>
+
+                    <!-- Tab Navigation -->
+                    <div class="tabs">
+                        <button class="tab-btn active" data-tab="headers">Headers</button>
+                        <button class="tab-btn" data-tab="sections">Sections</button>
+                        <button class="tab-btn" data-tab="imports">Imports</button>
+                        <button class="tab-btn" data-tab="exports">Exports</button>
+                        <button class="tab-btn" data-tab="directories">Data Directories</button>
+                    </div>
+
+                    <!-- Tab Content -->
+                    <div class="tab-content">
+                        <!-- Headers Tab -->
+                        <div class="tab-pane active" id="tab-headers">
+                            <div class="headers-container">
+                                <div class="header-section">
+                                    <h4>DOS Header</h4>
+                                    <div class="data-table" id="dos-header-table">
+                                        <!-- Populated by JS -->
+                                    </div>
+                                </div>
+                                <div class="header-section">
+                                    <h4>COFF Header</h4>
+                                    <div class="data-table" id="coff-header-table">
+                                        <!-- Populated by JS -->
+                                    </div>
+                                </div>
+                                <div class="header-section">
+                                    <h4>Optional Header</h4>
+                                    <div class="data-table" id="optional-header-table">
+                                        <!-- Populated by JS -->
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Sections Tab -->
+                        <div class="tab-pane" id="tab-sections">
+                            <div class="sections-table-container">
+                                <table class="data-table sections-table" id="sections-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Name</th>
+                                            <th>Virtual Size</th>
+                                            <th>Virtual Address</th>
+                                            <th>Raw Size</th>
+                                            <th>Raw Offset</th>
+                                            <th>Characteristics</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="sections-tbody">
+                                        <!-- Populated by JS -->
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- Imports Tab -->
+                        <div class="tab-pane" id="tab-imports">
+                            <div class="imports-container" id="imports-container">
+                                <!-- Populated by JS -->
+                            </div>
+                        </div>
+
+                        <!-- Exports Tab -->
+                        <div class="tab-pane" id="tab-exports">
+                            <div class="exports-container" id="exports-container">
+                                <!-- Populated by JS -->
+                            </div>
+                        </div>
+
+                        <!-- Data Directories Tab -->
+                        <div class="tab-pane" id="tab-directories">
+                            <div class="directories-table-container">
+                                <table class="data-table directories-table" id="directories-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Index</th>
+                                            <th>Name</th>
+                                            <th>Virtual Address</th>
+                                            <th>Size</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="directories-tbody">
+                                        <!-- Populated by JS -->
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Footer -->
+        <footer class="app-footer">
+            <div class="status-bar">
+                <span class="status-text" id="status-text">Ready</span>
+                <span class="file-path" id="current-file-path"></span>
+            </div>
+        </footer>
+    </div>
+
+    <!-- Batch Processing Modal -->
+    <div class="modal hidden" id="batch-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Batch Processing</h2>
+                <button class="modal-close" id="batch-modal-close">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="batch-files" id="batch-files">
+                    <h4>Selected Files:</h4>
+                    <ul class="file-list" id="batch-file-list">
+                        <!-- Populated by JS -->
+                    </ul>
+                </div>
+
+                <div class="batch-options">
+                    <h4>Options:</h4>
+                    <div class="option-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="batch-laa">
+                            <span>Apply Large Address Aware</span>
+                        </label>
+                    </div>
+                    <div class="option-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="batch-aslr">
+                            <span>Enable ASLR</span>
+                        </label>
+                    </div>
+                    <div class="option-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="batch-dep">
+                            <span>Enable DEP</span>
+                        </label>
+                    </div>
+                    <div class="option-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="batch-cfg">
+                            <span>Enable CFG</span>
+                        </label>
+                    </div>
+                    <div class="option-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="batch-remove-security">
+                            <span>Remove All Security</span>
+                        </label>
+                    </div>
+                    <div class="option-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="batch-backup" checked>
+                            <span>Create Backup</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="batch-progress hidden" id="batch-progress">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="batch-progress-fill"></div>
+                    </div>
+                    <span class="progress-text" id="batch-progress-text">0%</span>
+                </div>
+
+                <div class="batch-results hidden" id="batch-results">
+                    <h4>Results:</h4>
+                    <div class="results-summary" id="batch-results-summary"></div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="batch-cancel">Cancel</button>
+                <button class="btn btn-primary" id="batch-start">Start Processing</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Hex Diff Modal -->
+    <div class="modal hidden" id="hex-diff-modal">
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h2>Hex Diff</h2>
+                <button class="modal-close" id="hex-modal-close">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="hex-diff-container" id="hex-diff-container">
+                    <!-- Populated by JS -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div class="loading-overlay hidden" id="loading-overlay">
+        <div class="loading-spinner"></div>
+        <p class="loading-text" id="loading-text">Loading...</p>
+    </div>
+
+    <script src="js/app.js"></script>
+</body>
+</html>
