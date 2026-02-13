@@ -12,61 +12,12 @@
   },
   "scripts": {
     "start": "electron .",
-    "dev": "electron . --dev",
-    "build": "electron-builder",
-    "build:win": "electron-builder --win",
-    "build:linux": "electron-builder --linux",
-    "build:mac": "electron-builder --mac",
-    "generate-key": "node license-manager.js generate"
-  },
-  "build": {
-    "appId": "com.ivgb-patcher-plus.app",
-    "productName": "IVGB Patcher+",
-    "directories": {
-      "output": "dist"
-    },
-    "files": [
-      "main.js",
-      "preload.js",
-      "pe-parser.js",
-      "pe-patcher.js",
-      "batch-processor.js",
-      "license-manager.js",
-      "renderer/**/*"
-    ],
-    "win": {
-      "target": [
-        "nsis",
-        "portable"
-      ],
-      "icon": "build/icon.png"
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "shortcutName": "IVGB Patcher+"
-    },
-    "linux": {
-      "target": [
-        "AppImage",
-        "deb"
-      ],
-      "icon": "build/icon.png",
-      "category": "Development"
-    },
-    "mac": {
-      "target": "dmg",
-      "icon": "build/icon.png",
-      "category": "public.app-category.developer-tools"
-    }
+    "dev": "electron . --dev"
   },
   "dependencies": {
     "electron-log": "^5.0.1"
   },
   "devDependencies": {
-    "electron": "^28.1.0",
-    "electron-builder": "^24.9.1"
+    "electron": "^28.1.0"
   }
 }

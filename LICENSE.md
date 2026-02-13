@@ -121,3 +121,9 @@ software under these terms.
 **Use** means anything you do with the software requiring one of
 your licenses.
 
+
+## Redistribution of Compiled Binaries
+
+**You are NOT permitted to distribute compiled, packaged, or binary versions of this software.**
+
+You may distribute the source code under these terms, provided that you do not include any build scripts, configurations, or instructions that facilitate the creation of compiled binaries for distribution. Users must compile the software from source themselves.
