@@ -1,0 +1,97 @@
+PE Editor Source Available License
+===================================
+
+Copyright (c) 2024 PE Editor
+
+Version 1.0
+
+This license governs use of the accompanying software ("Software").
+If you use the Software, you accept this license. If you do not accept
+the license, do not use the Software.
+
+DEFINITIONS
+-----------
+
+"Software" means the PE Editor source code and associated documentation.
+
+"Derivative Works" means any work that is based on the Software and for
+which the editorial revisions, annotations, elaborations, or other
+modifications represent an original work of authorship.
+
+"Commercial Use" means any use of the Software that is primarily intended
+for or directed toward commercial advantage or monetary compensation.
+
+"Pre-built Binaries" means compiled, executable versions of the Software
+provided in installer or portable format.
+
+GRANT OF LICENSE
+----------------
+
+1. SOURCE CODE ACCESS
+   You may view, study, and analyze the source code of the Software.
+
+2. PERSONAL USE
+   You may build and use the Software from source for personal,
+   non-commercial purposes at no cost.
+
+3. MODIFICATIONS
+   You may modify the source code for personal use. Modified versions
+   must retain this license and all copyright notices.
+
+4. REDISTRIBUTION OF SOURCE
+   You may redistribute unmodified copies of the source code, provided:
+   - You include this license
+   - You include all copyright notices
+   - You do not charge for the redistribution
+
+RESTRICTIONS
+------------
+
+1. NO REDISTRIBUTION OF BINARIES
+   You may NOT distribute pre-built binaries, installers, or compiled
+   versions of the Software without a separate commercial license.
+
+   Pre-built installers are available exclusively from:
+   https://gumroad.com/pe-editor
+
+2. NO COMMERCIAL USE
+   Commercial use of the Software requires a separate commercial license.
+   Contact sales@example.com for licensing options.
+
+3. NO SUBLICENSING
+   You may not sublicense or transfer your rights under this license.
+
+4. NO REMOVAL OF NOTICES
+   You may not remove or alter any license or copyright notices.
+
+PATENT LICENSE
+--------------
+
+This license does not grant any patent rights. The Software is provided
+"as is" without warranty of any kind, express or implied.
+
+DISCLAIMER
+----------
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+COMMERCIAL LICENSING
+--------------------
+
+For commercial use, redistribution of binaries, or enterprise licensing:
+
+- Purchase pre-built installers: https://gumroad.com/pe-editor
+- Commercial licenses: sales@example.com
+- Enterprise support: enterprise@example.com
+
+QUESTIONS
+---------
+
+If you have questions about this license or need clarification on
+permitted uses, contact: license@example.com
