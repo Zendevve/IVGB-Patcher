@@ -1,36 +1,27 @@
 {
-  "name": "pe-editor",
-  "version": "1.0.0",
-  "description": "Advanced PE Executable Editor — LAA/ASLR/DEP/CFG patcher with hex diff",
+  "name": "ivgb-patcher-plus",
+  "version": "2.0.0",
+  "description": "IVGB Patcher+ — Advanced PE Editor & Security Flag Toolkit",
   "main": "main.js",
+  "author": "YOUR NAME HERE",
+  "license": "SEE LICENSE IN LICENSE.md",
+  "homepage": "https://github.com/yourname/ivgb-patcher-plus",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourname/ivgb-patcher-plus.git"
+  },
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
-    "build": "electron-builder --win",
+    "build": "electron-builder",
     "build:win": "electron-builder --win",
     "build:linux": "electron-builder --linux",
-    "build:mac": "electron-builder --mac"
-  },
-  "author": "PE Editor",
-  "license": "SEE LICENSE IN LICENSE",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/yourusername/pe-editor.git"
-  },
-  "bugs": {
-    "url": "https://github.com/yourusername/pe-editor/issues"
-  },
-  "homepage": "https://github.com/yourusername/pe-editor#readme",
-  "devDependencies": {
-    "electron": "^28.0.0",
-    "electron-builder": "^24.9.1"
-  },
-  "dependencies": {
-    "electron-log": "^5.0.1"
+    "build:mac": "electron-builder --mac",
+    "generate-key": "node license-manager.js generate"
   },
   "build": {
-    "appId": "com.peeditor.app",
-    "productName": "PE Editor",
+    "appId": "com.ivgb-patcher-plus.app",
+    "productName": "IVGB Patcher+",
     "directories": {
       "output": "dist"
     },
@@ -40,16 +31,13 @@
       "pe-parser.js",
       "pe-patcher.js",
       "batch-processor.js",
+      "license-manager.js",
       "renderer/**/*"
     ],
     "win": {
       "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        }
+        "nsis",
+        "portable"
       ],
       "icon": "build/icon.png"
     },
@@ -57,7 +45,28 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
+      "createStartMenuShortcut": true,
+      "shortcutName": "IVGB Patcher+"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "icon": "build/icon.png",
+      "category": "Development"
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "build/icon.png",
+      "category": "public.app-category.developer-tools"
     }
+  },
+  "dependencies": {
+    "electron-log": "^5.0.1"
+  },
+  "devDependencies": {
+    "electron": "^28.1.0",
+    "electron-builder": "^24.9.1"
   }
 }

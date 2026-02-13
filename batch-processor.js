@@ -191,7 +191,7 @@ class BatchProcessor {
     };
 
     // Generate text summary
-    let textSummary = 'PE Editor Batch Processing Report\n';
+    let textSummary = 'IVGB Patcher+ Batch Processing Report\n';
     textSummary += '='.repeat(50) + '\n\n';
     textSummary += `Total Files: ${this.total}\n`;
     textSummary += `Successful: ${successCount}\n`;

@@ -1,566 +1,397 @@
-const { app, BrowserWindow, ipcMain, dialog, Menu, Tray, shell, nativeImage } = require('electron');
+const {
+  app, BrowserWindow, ipcMain, dialog, Menu, Tray, shell, nativeTheme,
+} = require('electron');
 const path = require('path');
 const fs = require('fs');
-const log = require('electron-log');
-const PEParser = require('./pe-parser.js');
-const PEPatcher = require('./pe-patcher.js');
-const BatchProcessor = require('./batch-processor.js');
+const crypto = require('crypto');
 
-// Configure logging
-log.transports.file.level = 'info';
-log.transports.file.maxSize = 10 * 1024 * 1024; // 10MB
-log.transports.console.level = 'debug';
-
-// Global exception handler
-process.on('uncaughtException', (error) => {
-  log.error('Uncaught Exception:', error);
-  if (dialog) {
-    dialog.showErrorBox('Fatal Error', `An unexpected error occurred:\n${error.message}`);
-  }
-  app.exit(1);
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-  log.error('Unhandled Rejection at:', promise, 'reason:', reason);
-});
+const { PEParser } = require('./pe-parser');
+const { PEPatcher } = require('./pe-patcher');
+const { BatchProcessor } = require('./batch-processor');
+const { LicenseManager } = require('./license-manager');
 
 let mainWindow = null;
 let tray = null;
-let currentFile = null;
-let peParser = null;
-let pePatcher = null;
-let batchProcessor = null;
+const fileStore = new Map();
+const isDev = process.argv.includes('--dev');
+const licenseManager = new LicenseManager();
+
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) { app.quit(); }
+else {
+  app.on('second-instance', (event, argv) => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+      const fp = argv.find(a => ['.exe', '.dll', '.sys', '.scr', '.ocx', '.drv'].includes(path.extname(a).toLowerCase()));
+      if (fp && fs.existsSync(fp)) loadFileFromPath(fp);
+    }
+  });
+}
 
 function createWindow() {
-  log.info('Creating main window');
-
+  nativeTheme.themeSource = 'dark';
   mainWindow = new BrowserWindow({
-    width: 1400,
-    height: 900,
-    minWidth: 1200,
-    minHeight: 700,
-    backgroundColor: '#1a1a2e',
+    width: 1400, height: 900, minWidth: 900, minHeight: 600,
+    title: 'IVGB Patcher+',
+    backgroundColor: '#0d1117',
+    show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false
+      contextIsolation: true, nodeIntegration: false, sandbox: false,
     },
-    show: false
   });
 
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
-
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
-    log.info('Main window shown');
+    if (isDev) mainWindow.webContents.openDevTools();
   });
 
-  mainWindow.on('close', (event) => {
-    if (tray) {
-      event.preventDefault();
-      mainWindow.hide();
-      log.info('Window hidden to tray');
-    }
+  mainWindow.on('close', (e) => {
+    if (tray && !app.isQuitting) { e.preventDefault(); mainWindow.hide(); }
   });
-
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-  });
-
-  createMenu();
-  createTray();
+  mainWindow.on('closed', () => { mainWindow = null; });
+  buildMenu();
 }
 
-function createMenu() {
+function buildMenu() {
   const template = [
     {
       label: 'File',
       submenu: [
-        {
-          label: 'Open PE File',
-          accelerator: 'CmdOrCtrl+O',
-          click: () => openFileDialog()
-        },
-        {
-          label: 'Save',
-          accelerator: 'CmdOrCtrl+S',
-          click: () => saveFile()
-        },
-        {
-          label: 'Save As...',
-          accelerator: 'CmdOrCtrl+Shift+S',
-          click: () => saveFileAs()
-        },
+        { label: 'Open PE File...', accelerator: 'CmdOrCtrl+O', click: () => openFileDialog() },
+        { label: 'Open Multiple...', accelerator: 'CmdOrCtrl+Shift+O', click: () => openMultipleFilesDialog() },
         { type: 'separator' },
-        {
-          label: 'Batch Process',
-          click: () => openBatchDialog()
-        },
+        { label: 'Save', accelerator: 'CmdOrCtrl+S', click: () => mainWindow?.webContents.send('menu-action', 'save') },
+        { label: 'Save As...', accelerator: 'CmdOrCtrl+Shift+S', click: () => mainWindow?.webContents.send('menu-action', 'save-as') },
         { type: 'separator' },
-        {
-          label: 'Exit',
-          accelerator: 'Alt+F4',
-          click: () => {
-            tray = null;
-            app.quit();
-          }
-        }
-      ]
+        { label: 'Batch Scan...', accelerator: 'CmdOrCtrl+B', click: () => openBatchDirectoryDialog() },
+        { type: 'separator' },
+        { label: 'Exit', accelerator: 'Alt+F4', click: () => { app.isQuitting = true; app.quit(); } },
+      ],
     },
     {
       label: 'Edit',
       submenu: [
-        {
-          label: 'Apply Large Address Aware',
-          click: () => applyLAA()
-        },
-        {
-          label: 'Toggle ASLR',
-          click: () => toggleASLR()
-        },
-        {
-          label: 'Toggle DEP',
-          click: () => toggleDEP()
-        },
-        {
-          label: 'Toggle CFG',
-          click: () => toggleCFG()
-        },
-        { type: 'separator' },
-        {
-          label: 'Hex Diff',
-          click: () => showHexDiff()
-        }
-      ]
+        { label: 'Apply Changes', accelerator: 'CmdOrCtrl+Enter', click: () => mainWindow?.webContents.send('menu-action', 'apply') },
+        { label: 'Reset to Original', accelerator: 'CmdOrCtrl+Z', click: () => mainWindow?.webContents.send('menu-action', 'reset') },
+      ],
     },
     {
       label: 'View',
       submenu: [
-        { role: 'reload' },
-        { role: 'forceReload' },
-        { role: 'toggleDevTools' },
+        { label: 'Overview', accelerator: 'CmdOrCtrl+1', click: () => mainWindow?.webContents.send('menu-action', 'tab-overview') },
+        { label: 'Flags', accelerator: 'CmdOrCtrl+2', click: () => mainWindow?.webContents.send('menu-action', 'tab-flags') },
+        { label: 'Sections', accelerator: 'CmdOrCtrl+3', click: () => mainWindow?.webContents.send('menu-action', 'tab-sections') },
+        { label: 'Imports', accelerator: 'CmdOrCtrl+4', click: () => mainWindow?.webContents.send('menu-action', 'tab-imports') },
+        { label: 'Exports', accelerator: 'CmdOrCtrl+5', click: () => mainWindow?.webContents.send('menu-action', 'tab-exports') },
+        { label: 'Directories', accelerator: 'CmdOrCtrl+6', click: () => mainWindow?.webContents.send('menu-action', 'tab-directories') },
+        { label: 'Hex Diff', accelerator: 'CmdOrCtrl+7', click: () => mainWindow?.webContents.send('menu-action', 'tab-hexdiff') },
+        { label: 'Batch', accelerator: 'CmdOrCtrl+8', click: () => mainWindow?.webContents.send('menu-action', 'tab-batch') },
         { type: 'separator' },
-        { role: 'resetZoom' },
-        { role: 'zoomIn' },
-        { role: 'zoomOut' },
+        { role: 'toggleDevTools' }, { role: 'reload' },
+      ],
+    },
+    {
+      label: 'License',
+      submenu: [
+        { label: 'Enter License Key...', click: () => mainWindow?.webContents.send('menu-action', 'show-license') },
+        { label: 'Deactivate License', click: () => mainWindow?.webContents.send('menu-action', 'deactivate-license') },
         { type: 'separator' },
-        { role: 'togglefullscreen' }
-      ]
+        {
+          label: 'Buy Pro License',
+          click: () => shell.openExternal('https://your-link-here.itch.io/ivgb-patcher-plus'),
+        },
+      ],
     },
     {
       label: 'Help',
       submenu: [
         {
-          label: 'About PE Editor',
-          click: () => showAbout()
+          label: 'About IVGB Patcher+',
+          click: () => {
+            const status = licenseManager.getStatus();
+            dialog.showMessageBox(mainWindow, {
+              type: 'info',
+              title: 'IVGB Patcher+',
+              message: 'IVGB Patcher+ v2.0.0',
+              detail: [
+                'Advanced PE Editor & Security Flag Toolkit',
+                '',
+                `License: ${status.tierLabel}`,
+                status.licensed ? `Activated: ${status.activatedAt}` : '',
+                '',
+                '© 2024 YOUR NAME HERE',
+                'Licensed under PolyForm Noncommercial 1.0.0',
+              ].filter(Boolean).join('\n'),
+            });
+          },
         },
-        {
-          label: 'View Logs',
-          click: () => shell.openPath(log.transports.file.getFile().path)
-        }
-      ]
-    }
+        { type: 'separator' },
+        { label: 'Support (Ko-fi)', click: () => shell.openExternal('https://ko-fi.com/yourname') },
+        { label: 'GitHub', click: () => shell.openExternal('https://github.com/yourname/ivgb-patcher-plus') },
+      ],
+    },
   ];
-
-  const menu = Menu.buildFromTemplate(template);
-  Menu.setApplicationMenu(menu);
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
 function createTray() {
-  try {
-    const iconPath = path.join(__dirname, 'build', 'icon.png');
-    let trayIcon;
-
-    if (fs.existsSync(iconPath)) {
-      trayIcon = nativeImage.createFromPath(iconPath);
-    } else {
-      trayIcon = nativeImage.createEmpty();
+  const { nativeImage } = require('electron');
+  const size = 16;
+  const buf = Buffer.alloc(size * size * 4, 0);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const idx = (y * size + x) * 4;
+      const cx = x - 7.5, cy = y - 7.5;
+      const dist = Math.sqrt(cx * cx + cy * cy);
+      if (dist >= 3 && dist <= 7) {
+        buf[idx] = 88; buf[idx + 1] = 166; buf[idx + 2] = 255; buf[idx + 3] = 255;
+      }
     }
-
-    tray = new Tray(trayIcon);
-
-    const contextMenu = Menu.buildFromTemplate([
-      {
-        label: 'Show PE Editor',
-        click: () => {
-          if (mainWindow) {
-            mainWindow.show();
-            mainWindow.focus();
-          }
-        }
-      },
-      { type: 'separator' },
-      {
-        label: 'Open File',
-        click: () => {
-          if (mainWindow) {
-            mainWindow.show();
-            mainWindow.focus();
-          }
-          openFileDialog();
-        }
-      },
-      { type: 'separator' },
-      {
-        label: 'Exit',
-        click: () => {
-          tray = null;
-          app.quit();
-        }
-      }
-    ]);
-
-    tray.setToolTip('PE Editor');
-    tray.setContextMenu(contextMenu);
-
-    tray.on('double-click', () => {
-      if (mainWindow) {
-        mainWindow.show();
-        mainWindow.focus();
-      }
-    });
-
-    log.info('Tray created successfully');
-  } catch (error) {
-    log.error('Failed to create tray:', error);
   }
+  const icon = nativeImage.createFromBuffer(buf, { width: size, height: size });
+  tray = new Tray(icon);
+  tray.setToolTip('IVGB Patcher+');
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'Show IVGB Patcher+', click: () => { if (mainWindow) { mainWindow.show(); mainWindow.focus(); } } },
+    { label: 'Open File...', click: () => { if (mainWindow) mainWindow.show(); openFileDialog(); } },
+    { type: 'separator' },
+    { label: 'Quit', click: () => { app.isQuitting = true; app.quit(); } },
+  ]));
+  tray.on('double-click', () => { if (mainWindow) { mainWindow.show(); mainWindow.focus(); } });
 }
+
+// ─── File Operations ─────────────────────────────────────────────────────────
 
 async function openFileDialog() {
+  if (!mainWindow) return;
   const result = await dialog.showOpenDialog(mainWindow, {
-    title: 'Select PE File',
+    title: 'Open PE Executable',
     filters: [
-      { name: 'Executable Files', extensions: ['exe', 'dll', 'sys', 'ocx'] },
-      { name: 'All Files', extensions: ['*'] }
+      { name: 'PE Executables', extensions: ['exe', 'dll', 'sys', 'scr', 'ocx', 'drv', 'cpl', 'efi'] },
+      { name: 'All Files', extensions: ['*'] },
     ],
-    properties: ['openFile']
+    properties: ['openFile'],
   });
-
-  if (!result.canceled && result.filePaths.length > 0) {
-    await loadPEFile(result.filePaths[0]);
-  }
+  if (!result.canceled && result.filePaths.length > 0) loadFileFromPath(result.filePaths[0]);
 }
 
-async function loadPEFile(filePath) {
-  try {
-    log.info(`Loading PE file: ${filePath}`);
-    currentFile = filePath;
-
-    peParser = new PEParser(filePath);
-    const peData = await peParser.parse();
-
-    pePatcher = new PEPatcher(filePath);
-
-    mainWindow.webContents.send('file-loaded', {
-      path: filePath,
-      data: peData
+async function openMultipleFilesDialog() {
+  if (!mainWindow) return;
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Open PE Executables',
+    filters: [
+      { name: 'PE Executables', extensions: ['exe', 'dll', 'sys', 'scr', 'ocx', 'drv', 'cpl', 'efi'] },
+      { name: 'All Files', extensions: ['*'] },
+    ],
+    properties: ['openFile', 'multiSelections'],
+  });
+  if (!result.canceled && result.filePaths.length > 0) {
+    const files = result.filePaths.map(fp => {
+      try { return loadFileEntry(fp); }
+      catch (err) { return { fileId: null, filename: path.basename(fp), error: err.message, status: 'error' }; }
     });
-
-    log.info('PE file loaded successfully');
-  } catch (error) {
-    log.error('Failed to load PE file:', error);
-    dialog.showErrorBox('Load Error', `Failed to load PE file:\n${error.message}`);
+    mainWindow.webContents.send('files-loaded', files);
   }
 }
 
-async function saveFile() {
-  if (!currentFile) {
-    return saveFileAs();
-  }
-
-  try {
-    if (pePatcher) {
-      await pePatcher.save();
-      log.info('File saved successfully');
-      mainWindow.webContents.send('file-saved', { path: currentFile });
-    }
-  } catch (error) {
-    log.error('Failed to save file:', error);
-    dialog.showErrorBox('Save Error', `Failed to save file:\n${error.message}`);
-  }
-}
-
-async function saveFileAs() {
-  const result = await dialog.showSaveDialog(mainWindow, {
-    title: 'Save PE File As',
-    defaultPath: currentFile || 'output.exe',
-    filters: [
-      { name: 'Executable Files', extensions: ['exe', 'dll'] },
-      { name: 'All Files', extensions: ['*'] }
-    ]
-  });
-
-  if (!result.canceled && result.filePath) {
-    try {
-      if (pePatcher) {
-        await pePatcher.saveAs(result.filePath);
-        currentFile = result.filePath;
-        log.info(`File saved as: ${result.filePath}`);
-        mainWindow.webContents.send('file-saved', { path: currentFile });
-      }
-    } catch (error) {
-      log.error('Failed to save file:', error);
-      dialog.showErrorBox('Save Error', `Failed to save file:\n${error.message}`);
-    }
-  }
-}
-
-async function openBatchDialog() {
+async function openBatchDirectoryDialog() {
+  if (!mainWindow) return;
   const result = await dialog.showOpenDialog(mainWindow, {
-    title: 'Select Files for Batch Processing',
-    filters: [
-      { name: 'Executable Files', extensions: ['exe', 'dll'] },
-      { name: 'All Files', extensions: ['*'] }
-    ],
-    properties: ['openFile', 'multiSelections']
+    title: 'Select Directory to Scan', properties: ['openDirectory'],
+  });
+  if (!result.canceled && result.filePaths.length > 0)
+    mainWindow.webContents.send('batch-directory-selected', result.filePaths[0]);
+}
+
+function loadFileEntry(filePath) {
+  const buffer = fs.readFileSync(filePath);
+  const fileId = crypto.randomBytes(16).toString('hex');
+  const parser = new PEParser(buffer);
+  const analysis = parser.getFullAnalysis();
+  analysis.file.name = path.basename(filePath);
+  analysis.file.path = filePath;
+
+  fileStore.set(fileId, {
+    buffer: Buffer.from(buffer), originalBuffer: Buffer.from(buffer),
+    filename: path.basename(filePath), filePath, analysis, timestamp: Date.now(),
   });
 
-  if (!result.canceled && result.filePaths.length > 0) {
-    mainWindow.webContents.send('batch-files-selected', result.filePaths);
-  }
+  return { fileId, filename: path.basename(filePath), filePath, analysis, status: 'ok' };
 }
 
-async function applyLAA() {
-  if (!pePatcher) {
-    dialog.showErrorBox('Error', 'No file loaded');
-    return;
-  }
-
+function loadFileFromPath(filePath) {
   try {
-    await pePatcher.applyLAA();
-    log.info('LAA applied successfully');
-    mainWindow.webContents.send('patch-applied', { type: 'LAA' });
-
-    await loadPEFile(currentFile);
-  } catch (error) {
-    log.error('Failed to apply LAA:', error);
-    dialog.showErrorBox('Patch Error', `Failed to apply LAA:\n${error.message}`);
-  }
+    const entry = loadFileEntry(filePath);
+    mainWindow.webContents.send('files-loaded', [entry]);
+  } catch (err) { dialog.showErrorBox('Failed to load', err.message); }
 }
 
-async function toggleASLR() {
-  if (!pePatcher) {
-    dialog.showErrorBox('Error', 'No file loaded');
-    return;
-  }
+// ─── IPC Handlers ────────────────────────────────────────────────────────────
 
-  try {
-    await pePatcher.toggleASLR();
-    log.info('ASLR toggled successfully');
-    mainWindow.webContents.send('patch-applied', { type: 'ASLR' });
+ipcMain.handle('open-file-dialog', () => openFileDialog());
+ipcMain.handle('open-multiple-dialog', () => openMultipleFilesDialog());
+ipcMain.handle('open-batch-directory-dialog', async () => {
+  const r = await dialog.showOpenDialog(mainWindow, { title: 'Select Directory', properties: ['openDirectory'] });
+  return r.canceled ? null : r.filePaths[0];
+});
 
-    await loadPEFile(currentFile);
-  } catch (error) {
-    log.error('Failed to toggle ASLR:', error);
-    dialog.showErrorBox('Patch Error', `Failed to toggle ASLR:\n${error.message}`);
-  }
-}
-
-async function toggleDEP() {
-  if (!pePatcher) {
-    dialog.showErrorBox('Error', 'No file loaded');
-    return;
-  }
-
-  try {
-    await pePatcher.toggleDEP();
-    log.info('DEP toggled successfully');
-    mainWindow.webContents.send('patch-applied', { type: 'DEP' });
-
-    await loadPEFile(currentFile);
-  } catch (error) {
-    log.error('Failed to toggle DEP:', error);
-    dialog.showErrorBox('Patch Error', `Failed to toggle DEP:\n${error.message}`);
-  }
-}
-
-async function toggleCFG() {
-  if (!pePatcher) {
-    dialog.showErrorBox('Error', 'No file loaded');
-    return;
-  }
-
-  try {
-    await pePatcher.toggleCFG();
-    log.info('CFG toggled successfully');
-    mainWindow.webContents.send('patch-applied', { type: 'CFG' });
-
-    await loadPEFile(currentFile);
-  } catch (error) {
-    log.error('Failed to toggle CFG:', error);
-    dialog.showErrorBox('Patch Error', `Failed to toggle CFG:\n${error.message}`);
-  }
-}
-
-async function showHexDiff() {
-  if (!currentFile) {
-    dialog.showErrorBox('Error', 'No file loaded');
-    return;
-  }
-
-  const result = await dialog.showOpenDialog(mainWindow, {
-    title: 'Select File to Compare',
-    filters: [
-      { name: 'Executable Files', extensions: ['exe', 'dll'] },
-      { name: 'All Files', extensions: ['*'] }
-    ],
-    properties: ['openFile']
+ipcMain.handle('load-dropped-files', (e, paths) => {
+  return paths.map(fp => {
+    try { return loadFileEntry(fp); }
+    catch (err) { return { fileId: null, filename: path.basename(fp), filePath: fp, error: err.message, status: 'error' }; }
   });
-
-  if (!result.canceled && result.filePaths.length > 0) {
-    try {
-      const parser1 = new PEParser(currentFile);
-      const parser2 = new PEParser(result.filePaths[0]);
-
-      const data1 = await parser1.parse();
-      const data2 = await parser2.parse();
-
-      mainWindow.webContents.send('hex-diff', {
-        file1: { path: currentFile, data: data1 },
-        file2: { path: result.filePaths[0], data: data2 }
-      });
-
-      log.info('Hex diff displayed');
-    } catch (error) {
-      log.error('Failed to show hex diff:', error);
-      dialog.showErrorBox('Error', `Failed to compare files:\n${error.message}`);
-    }
-  }
-}
-
-function showAbout() {
-  dialog.showMessageBox(mainWindow, {
-    type: 'info',
-    title: 'About PE Editor',
-    message: 'PE Editor v1.0.0',
-    detail: 'Advanced PE Editor for Windows Executables\n\nFeatures:\n- PE parsing (DOS, COFF, Optional headers)\n- Section management\n- Import/Export tables\n- LAA, ASLR, DEP, CFG patching\n- Hex diff\n- Batch processing\n- System tray support'
-  });
-}
-
-// IPC Handlers
-ipcMain.handle('open-file', async () => {
-  await openFileDialog();
 });
 
-ipcMain.handle('save-file', async () => {
-  await saveFile();
+ipcMain.handle('get-analysis', (e, fileId) => {
+  const entry = fileStore.get(fileId);
+  if (!entry) throw new Error('File not found');
+  const parser = new PEParser(entry.buffer);
+  const analysis = parser.getFullAnalysis();
+  analysis.file.name = entry.filename;
+  analysis.file.path = entry.filePath;
+  return analysis;
 });
 
-ipcMain.handle('save-file-as', async () => {
-  await saveFileAs();
+ipcMain.handle('apply-patch', (e, fileId, flags, recalcChecksum) => {
+  const entry = fileStore.get(fileId);
+  if (!entry) throw new Error('File not found');
+
+  const patcher = new PEPatcher(entry.buffer);
+  const flagResults = patcher.applyFlagChanges(flags);
+  let checksumResult = null;
+  if (recalcChecksum !== false) checksumResult = patcher.recalculateChecksum();
+
+  const hexDiff = patcher.getHexDiff();
+  const hashes = patcher.getHashes();
+  entry.buffer = patcher.getBuffer();
+  entry.timestamp = Date.now();
+
+  const parser = new PEParser(entry.buffer);
+  const analysis = parser.getFullAnalysis();
+  analysis.file.name = entry.filename;
+  analysis.file.path = entry.filePath;
+  entry.analysis = analysis;
+
+  return { flagResults, checksumResult, hexDiff, hashes, analysis };
 });
 
-ipcMain.handle('load-file', async (event, filePath) => {
-  await loadPEFile(filePath);
+ipcMain.handle('reset-file', (e, fileId) => {
+  const entry = fileStore.get(fileId);
+  if (!entry) throw new Error('File not found');
+  entry.buffer = Buffer.from(entry.originalBuffer);
+  const parser = new PEParser(entry.buffer);
+  const analysis = parser.getFullAnalysis();
+  analysis.file.name = entry.filename;
+  analysis.file.path = entry.filePath;
+  entry.analysis = analysis;
+  return analysis;
 });
 
-ipcMain.handle('apply-laa', async () => {
-  await applyLAA();
+ipcMain.handle('save-file', (e, fileId) => {
+  const entry = fileStore.get(fileId);
+  if (!entry) throw new Error('File not found');
+  if (!entry.filePath) throw new Error('No file path');
+
+  const ext = path.extname(entry.filePath);
+  const base = entry.filePath.slice(0, -ext.length);
+  let bp = `${base}.backup${ext}`;
+  let c = 1;
+  while (fs.existsSync(bp)) { bp = `${base}.backup${c}${ext}`; c++; }
+  fs.copyFileSync(entry.filePath, bp);
+  fs.writeFileSync(entry.filePath, entry.buffer);
+  return { savedPath: entry.filePath, backupPath: bp };
 });
 
-ipcMain.handle('toggle-aslr', async () => {
-  await toggleASLR();
-});
-
-ipcMain.handle('toggle-dep', async () => {
-  await toggleDEP();
-});
-
-ipcMain.handle('toggle-cfg', async () => {
-  await toggleCFG();
-});
-
-ipcMain.handle('show-hex-diff', async () => {
-  await showHexDiff();
-});
-
-ipcMain.handle('batch-process', async (event, { files, options }) => {
-  try {
-    batchProcessor = new BatchProcessor(files, options);
-    const results = await batchProcessor.process();
-
-    mainWindow.webContents.send('batch-complete', results);
-
-    return results;
-  } catch (error) {
-    log.error('Batch processing failed:', error);
-    throw error;
-  }
-});
-
-ipcMain.handle('get-file-info', async (event, filePath) => {
-  try {
-    const stats = fs.statSync(filePath);
-    return {
-      size: stats.size,
-      created: stats.birthtime,
-      modified: stats.mtime
-    };
-  } catch (error) {
-    log.error('Failed to get file info:', error);
-    throw error;
-  }
-});
-
-ipcMain.handle('read-hex', async (event, { filePath, offset, length }) => {
-  try {
-    const parser = new PEParser(filePath);
-    return await parser.readHex(offset, length);
-  } catch (error) {
-    log.error('Failed to read hex:', error);
-    throw error;
-  }
-});
-
-ipcMain.handle('export-report', async (event, { data, format }) => {
+ipcMain.handle('save-file-as', async (e, fileId) => {
+  const entry = fileStore.get(fileId);
+  if (!entry) throw new Error('File not found');
   const result = await dialog.showSaveDialog(mainWindow, {
-    title: 'Export Report',
-    defaultPath: 'pe-report.txt',
-    filters: [
-      { name: 'Text Files', extensions: ['txt'] },
-      { name: 'JSON Files', extensions: ['json'] }
-    ]
+    title: 'Save Modified PE File', defaultPath: entry.filename,
+    filters: [{ name: 'PE Executables', extensions: ['exe', 'dll', 'sys'] }, { name: 'All Files', extensions: ['*'] }],
   });
-
-  if (!result.canceled && result.filePath) {
-    try {
-      if (format === 'json') {
-        fs.writeFileSync(result.filePath, JSON.stringify(data, null, 2));
-      } else {
-        fs.writeFileSync(result.filePath, data);
-      }
-      log.info(`Report exported to: ${result.filePath}`);
-    } catch (error) {
-      log.error('Failed to export report:', error);
-      throw error;
-    }
-  }
+  if (result.canceled) return null;
+  fs.writeFileSync(result.filePath, entry.buffer);
+  return { savedPath: result.filePath };
 });
 
-// App lifecycle
+ipcMain.handle('get-hex-data', (e, fileId, offset, length) => {
+  const entry = fileStore.get(fileId);
+  if (!entry) throw new Error('File not found');
+  const safeLen = Math.min(length || 256, 4096);
+  const safeOff = Math.max(0, Math.min(offset, entry.buffer.length - 1));
+  const end = Math.min(safeOff + safeLen, entry.buffer.length);
+  const slice = entry.buffer.slice(safeOff, end);
+  const rows = [];
+  for (let i = 0; i < slice.length; i += 16) {
+    const rb = slice.slice(i, Math.min(i + 16, slice.length));
+    const hex = [], ascii = [];
+    for (let j = 0; j < 16; j++) {
+      if (j < rb.length) { hex.push(rb[j].toString(16).toUpperCase().padStart(2, '0')); ascii.push(rb[j] >= 32 && rb[j] < 127 ? String.fromCharCode(rb[j]) : '.'); }
+      else { hex.push('  '); ascii.push(' '); }
+    }
+    rows.push({ offset: safeOff + i, offsetHex: '0x' + (safeOff + i).toString(16).toUpperCase().padStart(8, '0'), hex, ascii: ascii.join('') });
+  }
+  return { offset: safeOff, length: end - safeOff, fileSize: entry.buffer.length, rows };
+});
+
+ipcMain.handle('get-diff', (e, fileId) => {
+  const entry = fileStore.get(fileId);
+  if (!entry) throw new Error('File not found');
+  const diffs = [];
+  for (let i = 0; i < Math.max(entry.originalBuffer.length, entry.buffer.length); i++) {
+    const ob = i < entry.originalBuffer.length ? entry.originalBuffer[i] : null;
+    const nb = i < entry.buffer.length ? entry.buffer[i] : null;
+    if (ob !== nb) diffs.push({ offset: i, offsetHex: '0x' + i.toString(16).toUpperCase().padStart(8, '0'), oldByte: ob, newByte: nb, oldHex: ob !== null ? ob.toString(16).toUpperCase().padStart(2, '0') : '--', newHex: nb !== null ? nb.toString(16).toUpperCase().padStart(2, '0') : '--' });
+  }
+  return { totalChangedBytes: diffs.length, diffs, isModified: diffs.length > 0 };
+});
+
+ipcMain.handle('batch-scan', (e, dir, recursive) => {
+  if (!fs.existsSync(dir)) throw new Error(`Directory not found: ${dir}`);
+  return new BatchProcessor().scanAndReport(dir, recursive);
+});
+
+ipcMain.handle('batch-patch', (e, files, flags, options) => {
+  return new BatchProcessor().batchPatch(files, flags, options);
+});
+
+ipcMain.handle('reveal-in-explorer', (e, fp) => shell.showItemInFolder(fp));
+
+// ─── License IPC ─────────────────────────────────────────────────────────────
+
+ipcMain.handle('license-get-status', () => licenseManager.getStatus());
+
+ipcMain.handle('license-activate', (e, key) => {
+  const result = licenseManager.activate(key);
+  if (result.valid) buildMenu(); // Refresh menu
+  return result;
+});
+
+ipcMain.handle('license-deactivate', () => {
+  const result = licenseManager.deactivate();
+  buildMenu();
+  return result;
+});
+
+ipcMain.handle('license-get-machine-id', () => licenseManager.getMachineId());
+
+// ─── App Lifecycle ───────────────────────────────────────────────────────────
+
 app.whenReady().then(() => {
-  log.info('App starting');
   createWindow();
+  createTray();
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
-    }
-  });
-});
-
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    if (!tray) {
-      app.quit();
-    }
+  const fp = process.argv.find(a => ['.exe', '.dll', '.sys', '.scr', '.ocx', '.drv'].includes(path.extname(a).toLowerCase()));
+  if (fp && fs.existsSync(fp)) {
+    mainWindow.webContents.once('did-finish-load', () => loadFileFromPath(fp));
   }
+
+  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 
-app.on('before-quit', () => {
-  log.info('App quitting');
-  tray = null;
-});
-
-log.info('Main process initialized');
+app.on('window-all-closed', () => { /* stay in tray */ });
+app.on('before-quit', () => { app.isQuitting = true; });
+app.on('open-file', (event, fp) => { event.preventDefault(); if (mainWindow) loadFileFromPath(fp); });
