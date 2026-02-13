@@ -30,3 +30,8 @@ desktop.ini
 # Temporary files
 *.tmp
 *.temp
+
+# Secrets
+key.js
+keys.txt
+
