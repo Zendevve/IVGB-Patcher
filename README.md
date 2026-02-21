@@ -4,85 +4,65 @@
 
 ### Advanced PE Executable Editor & Security Flag Toolkit
 
-**IV** (Roman numeral 4) **GB Patcher** — and then some.
+**IV** = 4 in Roman numerals. You get it.
 
 ![Version](https://img.shields.io/badge/version-2.0.0-blue)
 ![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-green)
-![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)
-
-[Download](#download) • [Features](#features) • [Screenshots](#screenshots) • [Building](#building) • [License](#license)
 
 </div>
 
 ---
 
-## What is this?
-
-The original 4GB Patch by NTCore does one thing: flips a single bit in a PE header.
-
-**IVGB Patcher+** does that and everything else you've ever wanted from a PE editor — in a clean desktop app with a dark UI.
-
-## Features
-
-| Feature | Description |
-|---|---|
-| 🎯 **LAA (4GB) Patching** | Set/clear LARGE_ADDRESS_AWARE — the classic 4GB patch |
-| 🔐 **ASLR Toggling** | Enable/disable DYNAMIC_BASE |
-| 🛡️ **DEP Toggling** | Enable/disable NX_COMPAT |
-| 🔒 **CFG Toggling** | Enable/disable Control Flow Guard |
-| 🏷️ **All PE Flags** | HIGH_ENTROPY_VA, FORCE_INTEGRITY, NO_SEH, APPCONTAINER, TERMINAL_SERVER_AWARE |
-| 📦 **Section Viewer** | Names, permissions, entropy visualization |
-| 📥 **Import Table** | Collapsible DLL tree, searchable |
-| 📤 **Export Table** | With forwarder detection |
-| 📁 **Data Directories** | All 16 PE data directories |
-| 🔍 **Hex Diff** | Byte-level visual diff — see exactly what changed |
-| 📂 **Batch Processing** | Scan directories, patch hundreds of files at once |
-| 💾 **Auto Backup** | Creates .backup before overwriting |
-| 🔢 **PE Checksum** | Automatically recalculated after patching |
-| 🔑 **File Hashes** | MD5, SHA-1, SHA-256 |
-| 🖱️ **Drag & Drop** | Drop files directly onto the window |
-| ⌨️ **Keyboard Shortcuts** | Ctrl+O, Ctrl+S, Ctrl+1-8, Ctrl+Enter |
-| 🖥️ **System Tray** | Minimize to tray |
-| 🌙 **Dark Theme** | Easy on the eyes |
-
 ## Download
 
-**[Get IVGB Patcher+ on itch.io →](https://your-link-here.itch.io/ivgb-patcher-plus)**
-
-| Tier | Price | Details |
+| | Personal | Paid |
 |---|---|---|
-| **Personal** | Free | Full app, non-commercial use |
-| **Supporter** | $5+ | Same app + name in credits |
-| **Pro License** | $15 | Commercial use permitted |
-| **Team / Studio** | $50 | Studio-wide commercial license |
+| **Price** | Free | $5 one-time |
+| **How** | Build from source | Pre-built installer |
+| **License key** | ❌ | ✅ |
+| **Auto-updates** | ❌ | ✅ |
+| **Commercial use** | ❌ | ❌ |
+| **Source code** | ✅ | ✅ |
 
-## Building From Source
+**[🛒 Buy IVGB Patcher+ — $5](https://yourname.gumroad.com/l/ivgb-patcher-plus)**
+
+You get a Windows installer + license key. That's it. No subscriptions. No tiers. One price.
+
+> Commercial use is not permitted under any circumstances.
+> This tool is for personal, educational, and hobbyist use only.
+
+## Build From Source (Free)
 
 ```bash
 git clone https://github.com/yourname/ivgb-patcher-plus.git
 cd ivgb-patcher-plus
 npm install
-npm start          # Run in dev mode
-npm run build:win  # Build Windows installer
+npm start
 ```
+
+## Features
+
+- 🎯 LAA (4GB) patching
+- 🔐 ASLR / DEP / CFG toggling
+- 📦 PE section viewer with entropy
+- 📥 Import table browser
+- 📤 Export table browser
+- 🔍 Hex diff — see exactly what changed
+- 📂 Batch directory scanning & patching
+- 💾 Auto-backup before patching
+- 🔢 PE checksum recalculation
+- 🔑 File hashes (MD5, SHA-1, SHA-256)
+- 🖱️ Drag & drop
+- 🌙 Dark theme
+- ⌨️ Keyboard shortcuts
 
 ## License
 
-**PolyForm Noncommercial 1.0.0** — See [LICENSE.md](LICENSE.md)
+PolyForm Noncommercial 1.0.0 — See [LICENSE.md](LICENSE.md)
 
-- ✅ View source, learn, modify for personal use
-- ✅ Use for personal, educational, non-commercial purposes
-- ❌ Cannot sell, redistribute commercially, or rebrand
+**Not for commercial use.**
 
-Commercial license available — see pricing above.
+## Support
 
-## Support Development
-
-- ☕ [Ko-fi](https://ko-fi.com/yourname)
-- 💖 [GitHub Sponsors](https://github.com/sponsors/yourname)
-
----
-
-<div align="center">
-  <sub>IVGB Patcher+ — because one bit shouldn't require a whole app, but here we are making it beautiful anyway.</sub>
-</div>
+- ☕ [Buy me a coffee](https://buymeacoffee.com/yourname)
+- 🛒 [Buy IVGB Patcher+](https://yourname.gumroad.com/l/ivgb-patcher-plus)

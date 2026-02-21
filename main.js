@@ -207,6 +207,14 @@ async function openBatchDirectoryDialog() {
 }
 
 function loadFileEntry(filePath) {
+  // Implement LRU eviction
+  if (fileStore.size >= 20) {
+    const oldestKey = Array.from(fileStore.keys()).reduce((oldest, key) =>
+      fileStore.get(key).timestamp < fileStore.get(oldest).timestamp ? key : oldest
+    );
+    fileStore.delete(oldestKey);
+  }
+
   const buffer = fs.readFileSync(filePath);
   const fileId = crypto.randomBytes(16).toString('hex');
   const parser = new PEParser(buffer);
@@ -288,6 +296,11 @@ ipcMain.handle('reset-file', (e, fileId) => {
   analysis.file.path = entry.filePath;
   entry.analysis = analysis;
   return analysis;
+});
+
+ipcMain.handle('close-file', (e, fileId) => {
+  fileStore.delete(fileId);
+  return { success: true };
 });
 
 ipcMain.handle('save-file', (e, fileId) => {

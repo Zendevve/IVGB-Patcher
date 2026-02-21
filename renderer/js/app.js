@@ -38,14 +38,14 @@ function renderLicenseUI() {
   const footer = $('#footerLicense');
 
   if (s.licensed) {
-    label.textContent = s.tierLabel;
-    label.style.color = s.tierColor;
-    footer.textContent = `Licensed: ${s.tierName}`;
-    footer.style.color = s.tierColor;
+    label.textContent = '✅ Licensed';
+    label.style.color = '#58a6ff';
+    footer.textContent = 'Licensed — Non-Commercial Use';
+    footer.style.color = '#58a6ff';
   } else {
-    label.textContent = 'Free — Non-Commercial';
+    label.textContent = 'Personal — Non-Commercial';
     label.style.color = '#8b949e';
-    footer.textContent = 'Unlicensed — Personal use only';
+    footer.textContent = 'Unlicensed — Build from source';
     footer.style.color = '#8b949e';
   }
 
@@ -56,26 +56,42 @@ function renderLicenseModal() {
   const s = state.license;
   const statusArea = $('#licenseStatusArea');
 
-  const tierIcons = { 0: '🆓', 1: '💚', 2: '💎', 3: '👑' };
-  const icon = tierIcons[s.tier] || '🆓';
-
-  statusArea.innerHTML = `
-    <div class="license-status ${s.licensed ? 'active' : ''}" style="border-left-color:${s.tierColor}">
-      <span class="tier-badge">${icon}</span>
-      <div class="tier-info">
-        <div class="tier-name" style="color:${s.tierColor}">${s.tierLabel}</div>
-        <div class="tier-detail">
-          ${s.licensed
-      ? `Activated${s.perpetual ? ' — Perpetual' : ` — Expires ${s.expiresAt}`}`
-      : 'Enter a license key below to activate'}
+  if (s.licensed) {
+    statusArea.innerHTML = `
+      <div class="license-status active" style="border-left-color:#58a6ff">
+        <span class="tier-badge">✅</span>
+        <div class="tier-info">
+          <div class="tier-name" style="color:#58a6ff">IVGB Patcher+ — Licensed</div>
+          <div class="tier-detail">
+            Activated: ${s.activatedAt?.split('T')[0] || 'Unknown'}
+            ${s.perpetual ? ' — Lifetime' : ` — Expires ${s.expiresAt?.split('T')[0]}`}
+          </div>
+          <div class="tier-detail" style="color:var(--yellow)">
+            ⚠️ Non-commercial use only
+          </div>
+          <div class="tier-detail" style="color:var(--green)">
+            Thank you for supporting development! 💙
+          </div>
         </div>
-        ${s.commercial
-      ? '<div class="tier-detail" style="color:var(--green)">✅ Commercial use permitted</div>'
-      : '<div class="tier-detail" style="color:var(--yellow)">⚠️ Non-commercial use only</div>'
-    }
-      </div>
-    </div>
-  `;
+      </div>`;
+  } else {
+    statusArea.innerHTML = `
+      <div class="license-status">
+        <span class="tier-badge">🔓</span>
+        <div class="tier-info">
+          <div class="tier-name" style="color:#8b949e">Not Licensed</div>
+          <div class="tier-detail">
+            You built from source — that's totally fine for personal use.
+          </div>
+          <div class="tier-detail">
+            Buy a license to support development and get the pre-built installer with updates.
+          </div>
+          <div class="tier-detail" style="color:var(--yellow)">
+            ⚠️ Non-commercial use only regardless of license
+          </div>
+        </div>
+      </div>`;
+  }
 
   $('#btnDeactivate').style.display = s.licensed ? '' : 'none';
 }
@@ -130,6 +146,7 @@ function initLicenseUI() {
     // This opens in the system browser via main process
     // For now just show a toast
     toast('Opening store page...', 'info');
+    api.onMenuAction('buy-license'); // Or direct shell usage if exposed
   });
 }
 

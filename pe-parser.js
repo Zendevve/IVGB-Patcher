@@ -1,666 +1,358 @@
-const fs = require('fs');
-const path = require('path');
-const log = require('electron-log');
+const crypto = require('crypto');
 
 class PEParser {
-  constructor(filePath) {
-    this.filePath = filePath;
-    this.buffer = null;
-    this.fileSize = 0;
+  constructor(buffer) {
+    if (!Buffer.isBuffer(buffer)) throw new Error('PEParser requires a Buffer');
+    this.buffer = buffer;
+    this.fileSize = buffer.length;
   }
 
-  async parse() {
-    try {
-      log.info(`Parsing PE file: ${this.filePath}`);
+  getFullAnalysis() {
+    this.verifySignatures();
+    const dosHeader = this.parseDOSHeader();
+    const peOffset = dosHeader.e_lfanew;
+    const coffHeader = this.parseCOFFHeader(peOffset + 4);
+    const optionalHeader = this.parseOptionalHeader(peOffset + 24, coffHeader);
+    const sections = this.parseSections(peOffset + 24 + coffHeader.SizeOfOptionalHeader, coffHeader.NumberOfSections);
+    const dataDirectories = this.parseDataDirectories(optionalHeader, peOffset);
+    const imports = this.parseImports(optionalHeader, dataDirectories, sections);
+    const exports = this.parseExports(optionalHeader, dataDirectories, sections);
 
-      this.buffer = fs.readFileSync(this.filePath);
-      this.fileSize = this.buffer.length;
-
-      // Verify DOS header
-      const dosHeader = this.parseDOSHeader();
-      if (dosHeader.e_magic !== 0x5A4D) { // "MZ"
-        throw new Error('Invalid DOS header signature');
-      }
-
-      // Get PE header offset
-      const peOffset = dosHeader.e_lfanew;
-
-      // Verify PE signature
-      const peSignature = this.buffer.readUInt32LE(peOffset);
-      if (peSignature !== 0x00004550) { // "PE\0\0"
-        throw new Error('Invalid PE signature');
-      }
-
-      // Parse COFF header
-      const coffHeader = this.parseCOFFHeader(peOffset + 4);
-
-      // Parse Optional header
-      const optionalHeader = this.parseOptionalHeader(peOffset + 4 + 20, coffHeader);
-
-      // Parse sections
-      const sections = this.parseSections(peOffset + 4 + 20 + coffHeader.SizeOfOptionalHeader, coffHeader.NumberOfSections);
-
-      // Parse data directories if PE32+
-      const dataDirectories = this.parseDataDirectories(optionalHeader, peOffset);
-
-      // Parse imports if present
-      const imports = this.parseImports(dataDirectories, optionalHeader);
-
-      // Parse exports if present
-      const exports = this.parseExports(dataDirectories, optionalHeader);
-
-      const result = {
-        filePath: this.filePath,
-        fileName: path.basename(this.filePath),
-        fileSize: this.fileSize,
-        dosHeader,
-        coffHeader,
-        optionalHeader,
-        sections,
-        dataDirectories,
-        imports,
-        exports,
-        characteristics: this.parseCharacteristics(coffHeader.Characteristics),
-        dllCharacteristics: this.parseDllCharacteristics(optionalHeader.DllCharacteristics)
-      };
-
-      log.info('PE file parsed successfully');
-      return result;
-
-    } catch (error) {
-      log.error('PE parsing error:', error);
-      throw error;
-    }
-  }
-
-  parseDOSHeader() {
     return {
-      e_magic: this.buffer.readUInt16LE(0),
-      e_cblp: this.buffer.readUInt16LE(2),
-      e_cp: this.buffer.readUInt16LE(4),
-      e_crlc: this.buffer.readUInt16LE(6),
-      e_cparhdr: this.buffer.readUInt16LE(8),
-      e_minalloc: this.buffer.readUInt16LE(10),
-      e_maxalloc: this.buffer.readUInt16LE(12),
-      e_ss: this.buffer.readUInt16LE(14),
-      e_sp: this.buffer.readUInt16LE(16),
-      e_csum: this.buffer.readUInt16LE(18),
-      e_ip: this.buffer.readUInt16LE(20),
-      e_cs: this.buffer.readUInt16LE(22),
-      e_lfarlc: this.buffer.readUInt16LE(24),
-      e_ovno: this.buffer.readUInt16LE(28),
-      e_res: this.buffer.slice(32, 48),
-      e_oemid: this.buffer.readUInt16LE(48),
-      e_oeminfo: this.buffer.readUInt16LE(50),
-      e_res2: this.buffer.slice(52, 64),
-      e_lfanew: this.buffer.readInt32LE(60)
+      file: {
+        name: 'unknown', // Set by caller
+        path: '',        // Set by caller
+        size: this.fileSize,
+        sizeFormatted: this.formatSize(this.fileSize),
+        md5: this.hash('md5'),
+        sha1: this.hash('sha1'),
+        sha256: this.hash('sha256')
+      },
+      summary: this.buildSummary(coffHeader, optionalHeader, sections, imports, exports),
+      coffHeader,
+      optionalHeader,
+      sections,
+      imports,
+      exports: exports || { dllName: null, functions: [] },
+      dataDirectories
     };
   }
 
+  verifySignatures() {
+    if (this.buffer.length < 64) throw new Error('File too small');
+    if (this.buffer.readUInt16LE(0) !== 0x5A4D) throw new Error('Invalid DOS magic');
+    const peOffset = this.buffer.readUInt32LE(60);
+    if (peOffset + 4 > this.buffer.length) throw new Error('PE offset out of bounds');
+    if (this.buffer.readUInt32LE(peOffset) !== 0x00004550) throw new Error('Invalid PE signature');
+  }
+
+  formatSize(bytes) {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024, sizes = ['Bytes', 'KB', 'MB', 'GB'], i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  }
+
+  hash(algo) { return crypto.createHash(algo).update(this.buffer).digest('hex'); }
+
+  parseDOSHeader() { return { e_lfanew: this.buffer.readUInt32LE(60) }; }
+
   parseCOFFHeader(offset) {
+    const chars = this.buffer.readUInt16LE(offset + 18);
     return {
       Machine: this.buffer.readUInt16LE(offset),
       NumberOfSections: this.buffer.readUInt16LE(offset + 2),
       TimeDateStamp: this.buffer.readUInt32LE(offset + 4),
-      PointerToSymbolTable: this.buffer.readUInt32LE(offset + 8),
-      NumberOfSymbols: this.buffer.readUInt32LE(offset + 12),
       SizeOfOptionalHeader: this.buffer.readUInt16LE(offset + 16),
-      Characteristics: this.buffer.readUInt16LE(offset + 18)
+      Characteristics: chars,
+      CharacteristicsFlags: this.getCoffFlags(chars)
     };
   }
 
-  parseOptionalHeader(offset, coffHeader) {
+  parseOptionalHeader(offset, coff) {
     const magic = this.buffer.readUInt16LE(offset);
+    const isPE32Plus = magic === 0x020B;
+    const dllChars = this.buffer.readUInt16LE(offset + 70);
 
-    let optionalHeader;
-
-    if (magic === 0x10b) { // PE32
-      optionalHeader = {
-        magic: 'PE32',
-        Magic: magic,
-        MajorLinkerVersion: this.buffer.readUInt8(offset + 2),
-        MinorLinkerVersion: this.buffer.readUInt8(offset + 3),
-        SizeOfCode: this.buffer.readUInt32LE(offset + 4),
-        SizeOfInitializedData: this.buffer.readUInt32LE(offset + 8),
-        SizeOfUninitializedData: this.buffer.readUInt32LE(offset + 12),
-        AddressOfEntryPoint: this.buffer.readUInt32LE(offset + 16),
-        BaseOfCode: this.buffer.readUInt32LE(offset + 20),
-        BaseOfData: this.buffer.readUInt32LE(offset + 24),
-        ImageBase: this.buffer.readUInt32LE(offset + 28),
-        SectionAlignment: this.buffer.readUInt32LE(offset + 32),
-        FileAlignment: this.buffer.readUInt32LE(offset + 36),
-        MajorOperatingSystemVersion: this.buffer.readUInt16LE(offset + 40),
-        MinorOperatingSystemVersion: this.buffer.readUInt16LE(offset + 42),
-        MajorImageVersion: this.buffer.readUInt16LE(offset + 44),
-        MinorImageVersion: this.buffer.readUInt16LE(offset + 46),
-        MajorSubsystemVersion: this.buffer.readUInt16LE(offset + 48),
-        MinorSubsystemVersion: this.buffer.readUInt16LE(offset + 50),
-        Win32VersionValue: this.buffer.readUInt32LE(offset + 52),
-        SizeOfImage: this.buffer.readUInt32LE(offset + 56),
-        SizeOfHeaders: this.buffer.readUInt32LE(offset + 60),
-        CheckSum: this.buffer.readUInt32LE(offset + 64),
-        Subsystem: this.buffer.readUInt16LE(offset + 68),
-        DllCharacteristics: this.buffer.readUInt16LE(offset + 70),
-        SizeOfStackReserve: this.buffer.readUInt32LE(offset + 72),
-        SizeOfStackCommit: this.buffer.readUInt32LE(offset + 76),
-        SizeOfHeapReserve: this.buffer.readUInt32LE(offset + 80),
-        SizeOfHeapCommit: this.buffer.readUInt32LE(offset + 84),
-        LoaderFlags: this.buffer.readUInt32LE(offset + 88),
-        NumberOfRvaAndSizes: this.buffer.readUInt32LE(offset + 92),
-        DataDirectory: this.parseDataDirectoryArray(offset + 96, 16)
-      };
-    } else if (magic === 0x20b) { // PE32+
-      optionalHeader = {
-        magic: 'PE32+',
-        Magic: magic,
-        MajorLinkerVersion: this.buffer.readUInt8(offset + 2),
-        MinorLinkerVersion: this.buffer.readUInt8(offset + 3),
-        SizeOfCode: this.buffer.readUInt32LE(offset + 4),
-        SizeOfInitializedData: this.buffer.readUInt32LE(offset + 8),
-        SizeOfUninitializedData: this.buffer.readUInt32LE(offset + 12),
-        AddressOfEntryPoint: this.buffer.readUInt32LE(offset + 16),
-        BaseOfCode: this.buffer.readUInt32LE(offset + 20),
-        ImageBase: this.buffer.readBigUInt64LE(offset + 24),
-        SectionAlignment: this.buffer.readUInt32LE(offset + 32),
-        FileAlignment: this.buffer.readUInt32LE(offset + 36),
-        MajorOperatingSystemVersion: this.buffer.readUInt16LE(offset + 40),
-        MinorOperatingSystemVersion: this.buffer.readUInt16LE(offset + 42),
-        MajorImageVersion: this.buffer.readUInt16LE(offset + 44),
-        MinorImageVersion: this.buffer.readUInt16LE(offset + 46),
-        MajorSubsystemVersion: this.buffer.readUInt16LE(offset + 48),
-        MinorSubsystemVersion: this.buffer.readUInt16LE(offset + 50),
-        Win32VersionValue: this.buffer.readUInt32LE(offset + 52),
-        SizeOfImage: this.buffer.readUInt32LE(offset + 56),
-        SizeOfHeaders: this.buffer.readUInt32LE(offset + 60),
-        CheckSum: this.buffer.readUInt32LE(offset + 64),
-        Subsystem: this.buffer.readUInt16LE(offset + 68),
-        DllCharacteristics: this.buffer.readUInt16LE(offset + 70),
-        SizeOfStackReserve: this.buffer.readBigUInt64LE(offset + 72),
-        SizeOfStackCommit: this.buffer.readBigUInt64LE(offset + 80),
-        SizeOfHeapReserve: this.buffer.readBigUInt64LE(offset + 88),
-        SizeOfHeapCommit: this.buffer.readBigUInt64LE(offset + 96),
-        LoaderFlags: this.buffer.readUInt32LE(offset + 104),
-        NumberOfRvaAndSizes: this.buffer.readUInt32LE(offset + 108),
-        DataDirectory: this.parseDataDirectoryArray(offset + 112, 16)
-      };
-    } else {
-      throw new Error(`Unknown PE format: 0x${magic.toString(16)}`);
-    }
-
-    return optionalHeader;
+    return {
+      magic: isPE32Plus ? 'PE32+' : 'PE32',
+      Magic: magic,
+      LinkerVersion: `${this.buffer.readUInt8(offset + 2)}.${this.buffer.readUInt8(offset + 3)}`,
+      AddressOfEntryPoint: this.buffer.readUInt32LE(offset + 16),
+      ImageBase: isPE32Plus ? '0x' + this.buffer.readBigUInt64LE(offset + 24).toString(16).toUpperCase() : '0x' + this.buffer.readUInt32LE(offset + 28).toString(16).toUpperCase(),
+      SectionAlignment: this.buffer.readUInt32LE(offset + 32),
+      FileAlignment: this.buffer.readUInt32LE(offset + 36),
+      Subsystem: this.buffer.readUInt16LE(offset + 68),
+      DllCharacteristics: dllChars,
+      DllCharacteristicsFlags: this.getDllFlags(dllChars),
+      CheckSum: this.buffer.readUInt32LE(offset + 64),
+      NumberOfRvaAndSizes: this.buffer.readUInt32LE(offset + (isPE32Plus ? 108 : 92))
+    };
   }
 
-  parseDataDirectoryArray(offset, count) {
-    const directories = [];
-    for (let i = 0; i < count; i++) {
-      directories.push({
-        VirtualAddress: this.buffer.readUInt32LE(offset + i * 8),
-        Size: this.buffer.readUInt32LE(offset + i * 8 + 4)
-      });
-    }
-    return directories;
-  }
-
-  parseSections(offset, numberOfSections) {
+  parseSections(offset, count) {
     const sections = [];
-    const sectionSize = 40; // Size of IMAGE_SECTION_HEADER
-
-    for (let i = 0; i < numberOfSections; i++) {
-      const sectionOffset = offset + i * sectionSize;
-
-      // Read name (8 bytes, may not be null-terminated)
+    for (let i = 0; i < count; i++) {
+      const secOff = offset + i * 40;
+      if (secOff + 40 > this.buffer.length) break;
       let name = '';
       for (let j = 0; j < 8; j++) {
-        const char = this.buffer.readUInt8(sectionOffset + j);
-        if (char !== 0) {
-          name += String.fromCharCode(char);
-        } else {
-          break;
-        }
+        const c = this.buffer[secOff + j];
+        if (c === 0) break;
+        name += String.fromCharCode(c);
       }
+      const rawSize = this.buffer.readUInt32LE(secOff + 16);
+      const rawPtr = this.buffer.readUInt32LE(secOff + 20);
+      const chars = this.buffer.readUInt32LE(secOff + 36);
+
+      const r = (chars & 0x40000000) ? 'R' : '-';
+      const w = (chars & 0x80000000) ? 'W' : '-';
+      const x = (chars & 0x20000000) ? 'X' : '-';
 
       sections.push({
-        Name: name,
-        VirtualSize: this.buffer.readUInt32LE(sectionOffset + 8),
-        VirtualAddress: this.buffer.readUInt32LE(sectionOffset + 12),
-        SizeOfRawData: this.buffer.readUInt32LE(sectionOffset + 16),
-        PointerToRawData: this.buffer.readUInt32LE(sectionOffset + 20),
-        PointerToRelocations: this.buffer.readUInt32LE(sectionOffset + 24),
-        PointerToLinenumbers: this.buffer.readUInt32LE(sectionOffset + 28),
-        NumberOfRelocations: this.buffer.readUInt16LE(sectionOffset + 32),
-        NumberOfLinenumbers: this.buffer.readUInt16LE(sectionOffset + 34),
-        Characteristics: this.buffer.readUInt32LE(sectionOffset + 36),
-        characteristics: this.parseSectionCharacteristics(this.buffer.readUInt32LE(sectionOffset + 36))
+        index: i + 1,
+        name,
+        VirtualSize: this.buffer.readUInt32LE(secOff + 8),
+        VirtualAddress: this.buffer.readUInt32LE(secOff + 12),
+        SizeOfRawData: rawSize,
+        PointerToRawData: rawPtr,
+        Characteristics: chars,
+        CharacteristicsFlags: this.getSectionFlags(chars),
+        Entropy: this.calculateEntropy(rawPtr, rawSize),
+        Permissions: r + w + x
       });
     }
-
     return sections;
   }
 
-  parseDataDirectories(optionalHeader, peOffset) {
-    const names = [
-      'Export Table',
-      'Import Table',
-      'Resource Table',
-      'Exception Table',
-      'Certificate Table',
-      'Base Relocation Table',
-      'Debug',
-      'Architecture',
-      'Global Ptr',
-      'TLS Table',
-      'Load Config Table',
-      'Bound Import',
-      'IAT',
-      'Delay Import Descriptor',
-      'COM Descriptor',
-      'Reserved'
-    ];
+  parseDataDirectories(opt, peOff) {
+    const names = ['Export Table', 'Import Table', 'Resource Table', 'Exception Table', 'Certificate Table', 'Base Relocation Table', 'Debug', 'Architecture', 'Global Ptr', 'TLS Table', 'Load Config Table', 'Bound Import', 'IAT', 'Delay Import Descriptor', 'COM Descriptor', 'Reserved'];
+    const dirs = [];
+    const dirOffset = peOff + 24 + (opt.magic === 'PE32+' ? 112 : 96);
+    const count = Math.min(16, opt.NumberOfRvaAndSizes);
 
-    const directories = [];
-    const dataDirOffset = optionalHeader.DataDirectory ? 0 : (optionalHeader.magic === 'PE32+' ? 112 : 96);
-
-    for (let i = 0; i < 16; i++) {
-      const offset = peOffset + 4 + 20 + optionalHeader.SizeOfOptionalHeader + i * 8;
-
-      if (offset + 8 <= this.buffer.length) {
-        directories.push({
-          name: names[i],
-          index: i,
-          VirtualAddress: this.buffer.readUInt32LE(offset),
-          Size: this.buffer.readUInt32LE(offset + 4)
-        });
-      }
+    for (let i = 0; i < count; i++) {
+      const off = dirOffset + i * 8;
+      if (off + 8 > this.buffer.length) break;
+      const rva = this.buffer.readUInt32LE(off);
+      const size = this.buffer.readUInt32LE(off + 4);
+      dirs.push({
+        index: i,
+        name: names[i] || `Directory ${i}`,
+        VirtualAddress: rva,
+        Size: size,
+        rvaHex: '0x' + rva.toString(16).toUpperCase(),
+        sizeHex: '0x' + size.toString(16).toUpperCase(),
+        present: rva !== 0 && size !== 0
+      });
     }
-
-    return directories;
+    return dirs;
   }
 
-  parseImports(dataDirectories, optionalHeader) {
-    const importDir = dataDirectories.find(d => d.index === 1); // Import Table
-    if (!importDir || importDir.VirtualAddress === 0) {
-      return null;
-    }
+  parseImports(opt, dirs, sections) {
+    const impDir = dirs.find(d => d.index === 1);
+    if (!impDir || !impDir.present) return [];
 
-    try {
-      const rvaToFileOffset = this.getRvaToFileOffset(optionalHeader);
-      const importOffset = rvaToFileOffset(importDir.VirtualAddress);
+    const impOff = this.rvaToOffset(impDir.VirtualAddress, sections);
+    if (impOff === null || impOff > this.buffer.length) return [];
 
-      const imports = [];
-      let entryIndex = 0;
+    const imports = [];
+    let idx = 0;
+    while (true) {
+      const entryOff = impOff + idx * 20;
+      if (entryOff + 20 > this.buffer.length) break;
+      const lookupRVA = this.buffer.readUInt32LE(entryOff);
+      const nameRVA = this.buffer.readUInt32LE(entryOff + 12);
+      const thunkRVA = this.buffer.readUInt32LE(entryOff + 16);
+      if (lookupRVA === 0 && nameRVA === 0) break;
 
-      while (true) {
-        const entryOffset = importOffset + entryIndex * 20;
+      const nameOff = this.rvaToOffset(nameRVA, sections);
+      const dllName = nameOff !== null ? this.readString(nameOff) : 'Unknown';
 
-        if (entryOffset + 20 > this.buffer.length) break;
+      const funcs = [];
+      const funcRVA = thunkRVA !== 0 ? thunkRVA : lookupRVA;
+      const funcOff = this.rvaToOffset(funcRVA, sections);
 
-        const lookupTableRVA = this.buffer.readUInt32LE(entryOffset);
-        const timestamp = this.buffer.readUInt32LE(entryOffset + 4);
-        const forwarderChain = this.buffer.readUInt32LE(entryOffset + 8);
-        const nameRVA = this.buffer.readUInt32LE(entryOffset + 12);
-        const thunkTableRVA = this.buffer.readUInt32LE(entryOffset + 16);
+      if (funcOff !== null) {
+        let fIdx = 0;
+        const step = opt.magic === 'PE32+' ? 8 : 4;
+        while (true) {
+          const fEntryOff = funcOff + fIdx * step;
+          if (fEntryOff + step > this.buffer.length) break;
+          const val = opt.magic === 'PE32+' ? this.buffer.readBigUInt64LE(fEntryOff) : BigInt(this.buffer.readUInt32LE(fEntryOff));
+          if (val === 0n) break;
 
-        if (lookupTableRVA === 0 && nameRVA === 0) {
-          break;
-        }
-
-        // Get DLL name
-        const dllNameOffset = rvaToFileOffset(nameRVA);
-        let dllName = '';
-        if (dllNameOffset > 0 && dllNameOffset < this.buffer.length) {
-          let i = 0;
-          while (this.buffer[dllNameOffset + i] !== 0) {
-            dllName += String.fromCharCode(this.buffer[dllNameOffset + i]);
-            i++;
-          }
-        }
-
-        // Get functions
-        const functions = [];
-        const funcRVA = thunkTableRVA !== 0 ? thunkTableRVA : lookupTableRVA;
-        const funcOffset = rvaToFileOffset(funcRVA);
-
-        if (funcOffset > 0 && funcOffset < this.buffer.length) {
-          let funcIndex = 0;
-          while (true) {
-            const funcEntryOffset = funcOffset + funcIndex * (optionalHeader.magic === 'PE32+' ? 8 : 4);
-
-            if (funcEntryOffset + (optionalHeader.magic === 'PE32+' ? 8 : 4) > this.buffer.length) break;
-
-            let funcAddr;
-            if (optionalHeader.magic === 'PE32+') {
-              funcAddr = this.buffer.readBigUInt64LE(funcEntryOffset);
-            } else {
-              funcAddr = this.buffer.readUInt32LE(funcEntryOffset);
+          const isOrdinal = opt.magic === 'PE32+' ? (val & 0x8000000000000000n) !== 0n : (val & 0x80000000n) !== 0n;
+          if (isOrdinal) {
+            funcs.push({ ordinal: Number(val & 0xFFFFn), isOrdinal: true });
+          } else {
+            const fNameOff = this.rvaToOffset(Number(val & 0x7FFFFFFFn), sections);
+            if (fNameOff !== null && fNameOff + 2 < this.buffer.length) {
+              funcs.push({
+                hint: this.buffer.readUInt16LE(fNameOff),
+                name: this.readString(fNameOff + 2),
+                isOrdinal: false
+              });
             }
-
-            if (Number(funcAddr) === 0) break;
-
-            // Check if ordinal or name
-            if (optionalHeader.magic === 'PE32+') {
-              if ((funcAddr & 0x8000000000000000n) !== 0n) {
-                functions.push({
-                  ordinal: Number(funcAddr & 0xFFFFFFFFn),
-                  type: 'ordinal'
-                });
-              } else {
-                const nameOffset = rvaToFileOffset(Number(funcAddr));
-                if (nameOffset > 0 && nameOffset < this.buffer.length) {
-                  let name = '';
-                  let i = 0;
-                  while (this.buffer[nameOffset + 2 + i] !== 0) {
-                    name += String.fromCharCode(this.buffer[nameOffset + 2 + i]);
-                    i++;
-                  }
-                  functions.push({
-                    name: name,
-                    hint: this.buffer.readUInt16LE(nameOffset),
-                    type: 'name'
-                  });
-                }
-              }
-            } else {
-              if ((funcAddr & 0x80000000) !== 0) {
-                functions.push({
-                  ordinal: funcAddr & 0xFFFF,
-                  type: 'ordinal'
-                });
-              } else {
-                const nameOffset = rvaToFileOffset(funcAddr);
-                if (nameOffset > 0 && nameOffset < this.buffer.length) {
-                  let name = '';
-                  let i = 0;
-                  while (this.buffer[nameOffset + 2 + i] !== 0) {
-                    name += String.fromCharCode(this.buffer[nameOffset + 2 + i]);
-                    i++;
-                  }
-                  functions.push({
-                    name: name,
-                    hint: this.buffer.readUInt16LE(nameOffset),
-                    type: 'name'
-                  });
-                }
-              }
-            }
-
-            funcIndex++;
           }
+          fIdx++;
         }
-
-        imports.push({
-          dllName: dllName,
-          timestamp: timestamp,
-          functions: functions
-        });
-
-        entryIndex++;
       }
-
-      return imports;
-
-    } catch (error) {
-      log.error('Error parsing imports:', error);
-      return null;
+      imports.push({ dllName, functionCount: funcs.length, functions: funcs });
+      idx++;
     }
+    return imports;
   }
 
-  parseExports(dataDirectories, optionalHeader) {
-    const exportDir = dataDirectories.find(d => d.index === 0); // Export Table
-    if (!exportDir || exportDir.VirtualAddress === 0) {
-      return null;
-    }
+  parseExports(opt, dirs, sections) {
+    const expDir = dirs.find(d => d.index === 0);
+    if (!expDir || !expDir.present) return null;
 
-    try {
-      const rvaToFileOffset = this.getRvaToFileOffset(optionalHeader);
-      const exportOffset = rvaToFileOffset(exportDir.VirtualAddress);
+    const expOff = this.rvaToOffset(expDir.VirtualAddress, sections);
+    if (expOff === null || expOff + 40 > this.buffer.length) return null;
 
-      if (exportOffset + 40 > this.buffer.length) {
-        return null;
-      }
+    const nameRVA = this.buffer.readUInt32LE(expOff + 12);
+    const ordinalBase = this.buffer.readUInt32LE(expOff + 16);
+    const addrEntries = this.buffer.readUInt32LE(expOff + 20);
+    const namePtrs = this.buffer.readUInt32LE(expOff + 24);
+    const expAddrRVA = this.buffer.readUInt32LE(expOff + 28);
+    const namePtrRVA = this.buffer.readUInt32LE(expOff + 32);
+    const ordTableRVA = this.buffer.readUInt32LE(expOff + 36);
 
-      const characteristics = this.buffer.readUInt32LE(exportOffset);
-      const timeDateStamp = this.buffer.readUInt32LE(exportOffset + 4);
-      const majorVersion = this.buffer.readUInt16LE(exportOffset + 8);
-      const minorVersion = this.buffer.readUInt16LE(exportOffset + 10);
-      const nameRVA = this.buffer.readUInt32LE(exportOffset + 12);
-      const ordinalBase = this.buffer.readUInt32LE(exportOffset + 16);
-      const addressTableEntries = this.buffer.readUInt32LE(exportOffset + 20);
-      const numberOfNamePointers = this.buffer.readUInt32LE(exportOffset + 24);
-      const exportAddressTableRVA = this.buffer.readUInt32LE(exportOffset + 28);
-      const namePointerRVA = this.buffer.readUInt32LE(exportOffset + 32);
-      const ordinalTableRVA = this.buffer.readUInt32LE(exportOffset + 36);
+    const dllNameOff = this.rvaToOffset(nameRVA, sections);
+    const dllName = dllNameOff !== null ? this.readString(dllNameOff) : 'Unknown';
 
-      // Get DLL name
-      const dllNameOffset = rvaToFileOffset(nameRVA);
-      let dllName = '';
-      if (dllNameOffset > 0) {
-        let i = 0;
-        while (this.buffer[dllNameOffset + i] !== 0) {
-          dllName += String.fromCharCode(this.buffer[dllNameOffset + i]);
-          i++;
-        }
-      }
+    const funcs = [];
+    const expAddrOff = this.rvaToOffset(expAddrRVA, sections);
+    const namePtrOff = this.rvaToOffset(namePtrRVA, sections);
+    const ordOff = this.rvaToOffset(ordTableRVA, sections);
 
-      // Get exported functions
-      const functions = [];
-      const exportAddrOffset = rvaToFileOffset(exportAddressTableRVA);
-      const namePtrOffset = rvaToFileOffset(namePointerRVA);
-      const ordinalOffset = rvaToFileOffset(ordinalTableRVA);
-
-      for (let i = 0; i < addressTableEntries; i++) {
-        const funcRVA = this.buffer.readUInt32LE(exportAddrOffset + i * 4);
-        const ordinal = this.buffer.readUInt16LE(ordinalOffset + i * 2);
+    if (expAddrOff !== null && namePtrOff !== null && ordOff !== null) {
+      for (let i = 0; i < addrEntries; i++) {
+        const funcRVA = this.buffer.readUInt32LE(expAddrOff + i * 4);
+        if (funcRVA === 0) continue;
+        const ordinal = this.buffer.readUInt16LE(ordOff + i * 2);
 
         let name = null;
-        if (i < numberOfNamePointers) {
-          const nameRVA = this.buffer.readUInt32LE(namePtrOffset + i * 4);
-          const nameOffset = rvaToFileOffset(nameRVA);
-          if (nameOffset > 0) {
-            name = '';
-            let j = 0;
-            while (this.buffer[nameOffset + j] !== 0) {
-              name += String.fromCharCode(this.buffer[nameOffset + j]);
-              j++;
-            }
-          }
+        if (i < namePtrs) {
+          const nRVA = this.buffer.readUInt32LE(namePtrOff + i * 4);
+          const nOff = this.rvaToOffset(nRVA, sections);
+          if (nOff !== null) name = this.readString(nOff);
         }
 
-        functions.push({
-          ordinal: ordinalBase + ordinal,
-          address: funcRVA,
-          name: name,
-          isForwarded: funcRVA >= exportDir.VirtualAddress && funcRVA < exportDir.VirtualAddress + exportDir.Size
-        });
+        const isFwd = funcRVA >= expDir.VirtualAddress && funcRVA < expDir.VirtualAddress + expDir.Size;
+        let forwarder = null;
+        if (isFwd) {
+          const fwdOff = this.rvaToOffset(funcRVA, sections);
+          if (fwdOff !== null) forwarder = this.readString(fwdOff);
+        }
+
+        funcs.push({ ordinal: ordinalBase + ordinal, address: funcRVA, rva: funcRVA, name, isForwarded: isFwd, forwarder });
       }
-
-      return {
-        dllName: dllName,
-        timestamp: timeDateStamp,
-        version: `${majorVersion}.${minorVersion}`,
-        ordinalBase: ordinalBase,
-        functions: functions
-      };
-
-    } catch (error) {
-      log.error('Error parsing exports:', error);
-      return null;
     }
+    return { dllName, functions: funcs };
   }
 
-  getRvaToFileOffset(optionalHeader) {
-    const sections = this.parseSections(
-      this.buffer.readInt32LE(60) + 4 + 20 + optionalHeader.SizeOfOptionalHeader,
-      this.buffer.readUInt16LE(this.buffer.readInt32LE(60) + 4 + 2)
-    );
+  rvaToOffset(rva, sections) {
+    const sec = sections.find(s => rva >= s.VirtualAddress && rva < s.VirtualAddress + Math.max(s.VirtualSize, s.SizeOfRawData));
+    if (sec) return sec.PointerToRawData + (rva - sec.VirtualAddress);
+    return null; // Return null if invalid RVA
+  }
 
-    return (rva) => {
-      for (const section of sections) {
-        if (rva >= section.VirtualAddress && rva < section.VirtualAddress + section.VirtualSize) {
-          return section.PointerToRawData + (rva - section.VirtualAddress);
-        }
-      }
-      return rva; // Fallback to RVA
+  readString(offset) {
+    let str = '';
+    while (offset < this.buffer.length && this.buffer[offset] !== 0) str += String.fromCharCode(this.buffer[offset++]);
+    return str;
+  }
+
+  calculateEntropy(offset, size) {
+    if (size === 0 || offset + size > this.buffer.length) return 0;
+    const counts = new Uint32Array(256);
+    for (let i = 0; i < size; i++) counts[this.buffer[offset + i]]++;
+    let entropy = 0;
+    for (let i = 0; i < 256; i++) {
+      if (counts[i] === 0) continue;
+      const p = counts[i] / size;
+      entropy -= p * Math.log2(p);
+    }
+    return parseFloat(entropy.toFixed(2));
+  }
+
+  buildSummary(coff, opt, sections, imports, exports) {
+    const m = coff.Machine;
+    const mach = m === 0x8664 ? 'x64' : m === 0x014C ? 'x86' : m === 0xAA64 ? 'ARM64' : 'Unknown';
+    const s = opt.Subsystem;
+    const subsys = s === 2 ? 'GUI' : s === 3 ? 'CUI' : s === 1 ? 'Native' : 'Unknown';
+    const isLAA = (coff.Characteristics & 0x20) !== 0;
+    const isASLR = (opt.DllCharacteristics & 0x40) !== 0;
+    const isDEP = (opt.DllCharacteristics & 0x100) !== 0;
+    const isCFG = (opt.DllCharacteristics & 0x4000) !== 0;
+    const isHEVA = (opt.DllCharacteristics & 0x20) !== 0;
+    const isDLL = (coff.Characteristics & 0x2000) !== 0;
+
+    return {
+      format: opt.magic,
+      machine: mach,
+      subsystem: subsys,
+      isDLL,
+      isLAA,
+      isASLR,
+      isDEP,
+      isCFG,
+      isHighEntropyVA: isHEVA,
+      entryPoint: '0x' + opt.AddressOfEntryPoint.toString(16).toUpperCase(),
+      imageBase: opt.ImageBase,
+      sectionCount: sections.length,
+      importCount: imports.length,
+      totalImportedFunctions: imports.reduce((sum, imp) => sum + imp.functionCount, 0),
+      exportCount: exports ? exports.functions.length : 0,
+      isDotNet: dirs => dirs.find(d => d.index === 14)?.present ?? false, // COM Descriptor
     };
   }
 
-  parseCharacteristics(characteristics) {
-    const flags = [];
-    const flagMap = [
-      { bit: 0, name: 'RELOCS_STRIPPED' },
-      { bit: 1, name: 'EXECUTABLE_IMAGE' },
-      { bit: 2, name: 'LINE_NUMS_STRIPPED' },
-      { bit: 3, name: 'LOCAL_SYMS_STRIPPED' },
-      { bit: 4, name: 'AGGRESSIVE_WS_TRIM' },
-      { bit: 5, name: 'LARGE_ADDRESS_AWARE' },
-      { bit: 6, name: 'RESERVED' },
-      { bit: 7, name: 'BYTES_REVERSED_LO' },
-      { bit: 8, name: '32BIT_MACHINE' },
-      { bit: 9, name: 'DEBUG_STRIPPED' },
-      { bit: 10, name: 'REMOVABLE_RUN_FROM_SWAP' },
-      { bit: 11, name: 'NET_RUN_FROM_SWAP' },
-      { bit: 12, name: 'SYSTEM' },
-      { bit: 13, name: 'DLL' },
-      { bit: 14, name: 'UP_SYSTEM_ONLY' },
-      { bit: 15, name: 'BYTES_REVERSED_HI' }
+  getCoffFlags(c) {
+    return [
+      { name: 'RELOCS_STRIPPED', bitHex: '0x0001', enabled: !!(c & 0x1), description: 'Relocation info stripped' },
+      { name: 'EXECUTABLE_IMAGE', bitHex: '0x0002', enabled: !!(c & 0x2), description: 'File is executable' },
+      { name: 'LINE_NUMS_STRIPPED', bitHex: '0x0004', enabled: !!(c & 0x4), description: 'Line numbers stripped' },
+      { name: 'LOCAL_SYMS_STRIPPED', bitHex: '0x0008', enabled: !!(c & 0x8), description: 'Local symbols stripped' },
+      { name: 'LARGE_ADDRESS_AWARE', bitHex: '0x0020', enabled: !!(c & 0x20), description: 'App can handle >2GB addresses' },
+      { name: '32BIT_MACHINE', bitHex: '0x0100', enabled: !!(c & 0x100), description: 'Machine is based on 32-bit-word architecture' },
+      { name: 'DEBUG_STRIPPED', bitHex: '0x0200', enabled: !!(c & 0x200), description: 'Debugging info stripped' },
+      { name: 'SYSTEM', bitHex: '0x1000', enabled: !!(c & 0x1000), description: 'System file' },
+      { name: 'DLL', bitHex: '0x2000', enabled: !!(c & 0x2000), description: 'File is a DLL' }
     ];
-
-    for (const flag of flagMap) {
-      if ((characteristics & (1 << flag.bit)) !== 0) {
-        flags.push(flag.name);
-      }
-    }
-
-    return flags;
   }
 
-  parseDllCharacteristics(dllCharacteristics) {
-    const flags = [];
-    const flagMap = [
-      { bit: 0, name: 'RESERVED' },
-      { bit: 1, name: 'RESERVED' },
-      { bit: 2, name: 'RESERVED' },
-      { bit: 3, name: 'RESERVED' },
-      { bit: 4, name: 'RESERVED' },
-      { bit: 5, name: 'HIGH_ENTROPY_VA' },
-      { bit: 6, name: 'DYNAMIC_BASE' }, // ASLR
-      { bit: 7, name: 'FORCE_INTEGRITY' },
-      { bit: 8, name: 'NX_COMPAT' }, // DEP
-      { bit: 9, name: 'NO_ISOLATION' },
-      { bit: 10, name: 'NO_SEH' },
-      { bit: 11, name: 'NO_BIND' },
-      { bit: 12, name: 'APPCONTAINER' },
-      { bit: 13, name: 'WDM_DRIVER' },
-      { bit: 14, name: 'GUARD_CF' }, // CFG
-      { bit: 15, name: 'TERMINAL_SERVER_AWARE' }
+  getDllFlags(c) {
+    return [
+      { name: 'HIGH_ENTROPY_VA', bitHex: '0x0020', enabled: !!(c & 0x20), description: 'Image can handle a high entropy 64-bit virtual address space' },
+      { name: 'DYNAMIC_BASE', bitHex: '0x0040', enabled: !!(c & 0x40), description: 'Relocatable at load time (ASLR)' },
+      { name: 'FORCE_INTEGRITY', bitHex: '0x0080', enabled: !!(c & 0x80), description: 'Code integrity checks enforced' },
+      { name: 'NX_COMPAT', bitHex: '0x0100', enabled: !!(c & 0x100), description: 'Compatible with Data Execution Prevention (DEP)' },
+      { name: 'NO_ISOLATION', bitHex: '0x0200', enabled: !!(c & 0x200), description: 'Image understands isolation and doesn\'t want it' },
+      { name: 'NO_SEH', bitHex: '0x0400', enabled: !!(c & 0x400), description: 'Image does not use SEH. No SE handler may reside in this image' },
+      { name: 'NO_BIND', bitHex: '0x0800', enabled: !!(c & 0x800), description: 'Do not bind this image' },
+      { name: 'APPCONTAINER', bitHex: '0x1000', enabled: !!(c & 0x1000), description: 'Image should execute in an AppContainer' },
+      { name: 'WDM_DRIVER', bitHex: '0x2000', enabled: !!(c & 0x2000), description: 'Driver uses WDM model' },
+      { name: 'GUARD_CF', bitHex: '0x4000', enabled: !!(c & 0x4000), description: 'Image supports Control Flow Guard' },
+      { name: 'TERMINAL_SERVER_AWARE', bitHex: '0x8000', enabled: !!(c & 0x8000), description: 'Terminal Server aware' }
     ];
-
-    for (const flag of flagMap) {
-      if ((dllCharacteristics & (1 << flag.bit)) !== 0) {
-        flags.push(flag.name);
-      }
-    }
-
-    return flags;
   }
 
-  parseSectionCharacteristics(characteristics) {
-    const flags = [];
-    const flagMap = [
-      { bit: 0, name: 'TYPE_REG' },
-      { bit: 1, name: 'TYPE_DSECT' },
-      { bit: 2, name: 'TYPE_NOLOAD' },
-      { bit: 3, name: 'TYPE_GROUP' },
-      { bit: 4, name: 'TYPE_NO_PAD' },
-      { bit: 5, name: 'TYPE_CNT_CODE' },
-      { bit: 6, name: 'TYPE_CNT_INITIALIZED_DATA' },
-      { bit: 7, name: 'TYPE_CNT_UNINITIALIZED_DATA' },
-      { bit: 8, name: 'TYPE_LNK_INFO' },
-      { bit: 9, name: 'TYPE_LNK_REMOVE' },
-      { bit: 10, name: 'TYPE_LNK_COMDAT' },
-      { bit: 11, name: 'RESERVED' },
-      { bit: 12, name: 'TYPE_NO_DEFER_SPEC_EXC' },
-      { bit: 14, name: 'TYPE_GPREL' },
-      { bit: 15, name: 'TYPE_MEM_FAR_CODE' },
-      { bit: 16, name: 'TYPE_MEM_Purgeable' },
-      { bit: 17, name: 'TYPE_MEM_16BIT' },
-      { bit: 18, name: 'TYPE_MEM_LOCKED' },
-      { bit: 19, name: 'TYPE_MEM_PRELOAD' },
-      { bit: 20, name: 'ALIGN_1BYTES' },
-      { bit: 21, name: 'ALIGN_2BYTES' },
-      { bit: 22, name: 'ALIGN_4BYTES' },
-      { bit: 23, name: 'ALIGN_8BYTES' },
-      { bit: 24, name: 'ALIGN_16BYTES' },
-      { bit: 25, name: 'ALIGN_32BYTES' },
-      { bit: 26, name: 'ALIGN_64BYTES' },
-      { bit: 27, name: 'ALIGN_128BYTES' },
-      { bit: 28, name: 'ALIGN_256BYTES' },
-      { bit: 29, name: 'ALIGN_512BYTES' },
-      { bit: 30, name: 'ALIGN_1024BYTES' },
-      { bit: 31, name: 'ALIGN_2048BYTES' }
-    ];
-
-    // Handle alignment bits
-    const alignBits = (characteristics >> 20) & 0xF;
-    const alignValues = [0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384];
-    if (alignBits < alignValues.length && alignValues[alignBits] > 0) {
-      flags.push(`ALIGN_${alignValues[alignBits]}BYTES`);
-    }
-
-    for (const flag of flagMap) {
-      if ((characteristics & (1 << flag.bit)) !== 0) {
-        flags.push(flag.name);
-      }
-    }
-
-    return flags;
-  }
-
-  async readHex(offset, length) {
-    try {
-      if (!this.buffer) {
-        this.buffer = fs.readFileSync(this.filePath);
-      }
-
-      const start = Math.max(0, offset);
-      const end = Math.min(this.buffer.length, offset + length);
-      const data = this.buffer.slice(start, end);
-
-      const hexLines = [];
-      for (let i = 0; i < data.length; i += 16) {
-        const lineOffset = start + i;
-        const lineData = data.slice(i, i + 16);
-
-        let hex = '';
-        let ascii = '';
-
-        for (let j = 0; j < 16; j++) {
-          if (j < lineData.length) {
-            hex += lineData[j].toString(16).padStart(2, '0') + ' ';
-            ascii += (lineData[j] >= 32 && lineData[j] <= 126)
-              ? String.fromCharCode(lineData[j])
-              : '.';
-          } else {
-            hex += '   ';
-            ascii += ' ';
-          }
-
-          if (j === 7) hex += ' ';
-        }
-
-        hexLines.push({
-          offset: lineOffset.toString(16).padStart(8, '0'),
-          hex: hex,
-          ascii: ascii
-        });
-      }
-
-      return hexLines;
-
-    } catch (error) {
-      log.error('Error reading hex:', error);
-      throw error;
-    }
+  getSectionFlags(c) {
+    const f = [];
+    if (c & 0x00000020) f.push('CODE');
+    if (c & 0x00000040) f.push('INITIALIZED_DATA');
+    if (c & 0x00000080) f.push('UNINITIALIZED_DATA');
+    if (c & 0x02000000) f.push('DISCARDABLE');
+    if (c & 0x04000000) f.push('NOT_CACHED');
+    if (c & 0x08000000) f.push('NOT_PAGED');
+    if (c & 0x10000000) f.push('SHARED');
+    if (c & 0x20000000) f.push('EXECUTE');
+    if (c & 0x40000000) f.push('READ');
+    if (c & 0x80000000) f.push('WRITE');
+    return f;
   }
 }
 
-module.exports = PEParser;
+module.exports = { PEParser };

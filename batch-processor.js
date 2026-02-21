@@ -1,273 +1,143 @@
 const fs = require('fs');
 const path = require('path');
 const log = require('electron-log');
-const PEParser = require('./pe-parser.js');
-const PEPatcher = require('./pe-patcher.js');
+const { PEParser } = require('./pe-parser.js');
+const { PEPatcher } = require('./pe-patcher.js');
 
 class BatchProcessor {
-  constructor(files, options = {}) {
-    this.files = files;
-    this.options = {
-      applyLAA: options.applyLAA || false,
-      toggleASLR: options.toggleASLR || null, // true, false, or null (no change)
-      toggleDEP: options.toggleDEP || null,
-      toggleCFG: options.toggleCFG || null,
-      removeSecurity: options.removeSecurity || false,
-      createBackup: options.createBackup !== false,
-      outputDir: options.outputDir || null,
-      recursive: options.recursive || false,
-      ...options
-    };
-
+  constructor() {
     this.results = [];
-    this.progress = 0;
-    this.total = files.length;
   }
 
-  async process() {
-    log.info(`Starting batch processing of ${this.files.length} files`);
+  async scanAndReport(directory, recursive) {
+    log.info(`Batch scanning directory: ${directory} (recursive: ${recursive})`);
 
-    for (const filePath of this.files) {
-      try {
-        const result = await this.processFile(filePath);
-        this.results.push(result);
-      } catch (error) {
-        log.error(`Error processing ${filePath}:`, error);
-        this.results.push({
-          file: filePath,
-          success: false,
-          error: error.message
-        });
-      }
+    if (!fs.existsSync(directory)) throw new Error(`Directory not found: ${directory}`);
 
-      this.progress++;
-    }
-
-    log.info('Batch processing complete');
-    return this.getSummary();
-  }
-
-  async processFile(filePath) {
-    const result = {
-      file: filePath,
-      fileName: path.basename(filePath),
-      success: false,
-      operations: []
-    };
-
-    try {
-      // Verify file exists
-      if (!fs.existsSync(filePath)) {
-        throw new Error('File not found');
-      }
-
-      // Verify it's a PE file
-      const stats = fs.statSync(filePath);
-      if (!stats.isFile()) {
-        throw new Error('Not a file');
-      }
-
-      // Parse the PE file first to get info
-      const parser = new PEParser(filePath);
-      const peData = await parser.parse();
-
-      result.peInfo = {
-        architecture: peData.coffHeader.Machine === 0x8664 ? 'x64' : 'x86',
-        subsystem: peData.optionalHeader.Subsystem,
-        imageBase: peData.optionalHeader.ImageBase.toString(),
-        entryPoint: peData.optionalHeader.AddressOfEntryPoint.toString(16),
-        sections: peData.sections.length,
-        imports: peData.imports ? peData.imports.length : 0,
-        exports: peData.exports ? peData.exports.functions.length : 0
-      };
-
-      // Handle output path
-      let outputPath = filePath;
-      if (this.options.outputDir) {
-        const fileName = path.basename(filePath);
-        outputPath = path.join(this.options.outputDir, fileName);
-
-        // Create output directory if it doesn't exist
-        if (!fs.existsSync(this.options.outputDir)) {
-          fs.mkdirSync(this.options.outputDir, { recursive: true });
-        }
-
-        // Copy file to output directory if different
-        if (outputPath !== filePath) {
-          fs.copyFileSync(filePath, outputPath);
-        }
-      }
-
-      // Create backup if requested
-      if (this.options.createBackup) {
-        const backupPath = outputPath + '.backup';
-        fs.copyFileSync(outputPath, backupPath);
-        result.backup = backupPath;
-      }
-
-      // Apply patches
-      const patcher = new PEPatcher(outputPath);
-
-      if (this.options.applyLAA) {
-        await patcher.applyLAA();
-        result.operations.push({ operation: 'LAA', success: true });
-        log.info(`Applied LAA to: ${filePath}`);
-      }
-
-      if (this.options.toggleASLR !== null) {
-        const currentFlags = await patcher.getSecurityFlags();
-
-        // Toggle to the opposite of current if needed
-        if ((this.options.toggleASLR && !currentFlags.aslr) ||
-          (!this.options.toggleASLR && currentFlags.aslr)) {
-          await patcher.toggleASLR();
-          result.operations.push({ operation: 'ASLR', success: true, enabled: !currentFlags.aslr });
-          log.info(`Toggled ASLR for: ${filePath}`);
-        }
-      }
-
-      if (this.options.toggleDEP !== null) {
-        const currentFlags = await patcher.getSecurityFlags();
-
-        if ((this.options.toggleDEP && !currentFlags.dep) ||
-          (!this.options.toggleDEP && currentFlags.dep)) {
-          await patcher.toggleDEP();
-          result.operations.push({ operation: 'DEP', success: true, enabled: !currentFlags.dep });
-          log.info(`Toggled DEP for: ${filePath}`);
-        }
-      }
-
-      if (this.options.toggleCFG !== null) {
-        const currentFlags = await patcher.getSecurityFlags();
-
-        if ((this.options.toggleCFG && !currentFlags.cfg) ||
-          (!this.options.toggleCFG && currentFlags.cfg)) {
-          await patcher.toggleCFG();
-          result.operations.push({ operation: 'CFG', success: true, enabled: !currentFlags.cfg });
-          log.info(`Toggled CFG for: ${filePath}`);
-        }
-      }
-
-      if (this.options.removeSecurity) {
-        await patcher.removeSecurity();
-        result.operations.push({ operation: 'RemoveSecurity', success: true });
-        log.info(`Removed security from: ${filePath}`);
-      }
-
-      // Verify the changes
-      const newParser = new PEParser(outputPath);
-      const newPeData = await newParser.parse();
-
-      result.newFlags = {
-        largeAddressAware: newPeData.characteristics.includes('LARGE_ADDRESS_AWARE'),
-        aslr: newPeData.dllCharacteristics.includes('DYNAMIC_BASE'),
-        dep: newPeData.dllCharacteristics.includes('NX_COMPAT'),
-        cfg: newPeData.dllCharacteristics.includes('GUARD_CF')
-      };
-
-      result.success = true;
-      result.message = 'Processed successfully';
-
-    } catch (error) {
-      result.success = false;
-      result.error = error.message;
-      result.message = `Error: ${error.message}`;
-      log.error(`Failed to process ${filePath}:`, error);
-    }
-
-    return result;
-  }
-
-  getSummary() {
-    const successCount = this.results.filter(r => r.success).length;
-    const failureCount = this.results.filter(r => !r.success).length;
-
+    const peFiles = await this.findPEFiles(directory, recursive);
+    const results = [];
     const summary = {
-      total: this.total,
-      success: successCount,
-      failed: failureCount,
-      results: this.results,
-      timestamp: new Date().toISOString()
+      ok: 0, errors: 0,
+      withLAA: 0, withoutLAA: 0,
+      withASLR: 0, withDEP: 0, withCFG: 0,
+      pe32: 0, pe32plus: 0
     };
 
-    // Generate text summary
-    let textSummary = 'IVGB Patcher+ Batch Processing Report\n';
-    textSummary += '='.repeat(50) + '\n\n';
-    textSummary += `Total Files: ${this.total}\n`;
-    textSummary += `Successful: ${successCount}\n`;
-    textSummary += `Failed: ${failureCount}\n\n`;
-    textSummary += 'Results:\n';
-    textSummary += '-'.repeat(50) + '\n';
+    for (const filePath of peFiles) {
+      try {
+        const buffer = fs.readFileSync(filePath);
+        const parser = new PEParser(buffer);
+        const analysis = parser.getFullAnalysis();
 
-    for (const result of this.results) {
-      textSummary += `\nFile: ${result.fileName}\n`;
-      textSummary += `Status: ${result.success ? 'SUCCESS' : 'FAILED'}\n`;
+        analysis.file.name = path.basename(filePath);
+        analysis.file.path = filePath;
 
-      if (result.success) {
-        if (result.operations && result.operations.length > 0) {
-          textSummary += 'Operations:\n';
-          for (const op of result.operations) {
-            textSummary += `  - ${op.operation}: ${op.success ? 'OK' : 'FAILED'}\n`;
-          }
-        }
+        results.push({
+          status: 'ok',
+          path: filePath,
+          name: path.basename(filePath),
+          analysis
+        });
 
-        if (result.newFlags) {
-          textSummary += 'New Flags:\n';
-          textSummary += `  LAA: ${result.newFlags.largeAddressAware}\n`;
-          textSummary += `  ASLR: ${result.newFlags.aslr}\n`;
-          textSummary += `  DEP: ${result.newFlags.dep}\n`;
-          textSummary += `  CFG: ${result.newFlags.cfg}\n`;
-        }
-      } else {
-        textSummary += `Error: ${result.error}\n`;
+        summary.ok++;
+        if (analysis.summary.isLAA) summary.withLAA++; else summary.withoutLAA++;
+        if (analysis.summary.isASLR) summary.withASLR++;
+        if (analysis.summary.isDEP) summary.withDEP++;
+        if (analysis.summary.isCFG) summary.withCFG++;
+        if (analysis.summary.format === 'PE32') summary.pe32++;
+        if (analysis.summary.format === 'PE32+') summary.pe32plus++;
+
+      } catch (err) {
+        log.error(`Batch scan error for ${filePath}:`, err);
+        results.push({
+          status: 'error',
+          path: filePath,
+          name: path.basename(filePath),
+          error: err.message
+        });
+        summary.errors++;
       }
     }
 
-    summary.textSummary = textSummary;
-
-    return summary;
+    return { totalFiles: peFiles.length, summary, results };
   }
 
-  getJSONReport() {
-    return JSON.stringify(this.getSummary(), null, 2);
+  async batchPatch(files, flags, options = {}) {
+    log.info(`Batch patching ${files.length} files`);
+    const results = [];
+
+    for (const filePath of files) {
+      try {
+        if (!fs.existsSync(filePath)) {
+          results.push({ name: path.basename(filePath), status: 'error', error: 'File not found' });
+          continue;
+        }
+
+        const buffer = fs.readFileSync(filePath);
+        const patcher = new PEPatcher(buffer);
+
+        const flagResults = patcher.applyFlagChanges(flags);
+        const changed = flagResults.some(r => r.changed);
+
+        if (!changed) {
+          results.push({ name: path.basename(filePath), status: 'skipped', error: 'No changes needed' });
+          continue;
+        }
+
+        if (options.recalcChecksum !== false) {
+          patcher.recalculateChecksum();
+        }
+
+        let backupPath = null;
+        if (options.createBackup !== false) {
+          const ext = path.extname(filePath);
+          const base = filePath.slice(0, -ext.length);
+          backupPath = `${base}.backup${ext}`;
+          let c = 1;
+          while (fs.existsSync(backupPath)) {
+            backupPath = `${base}.backup${c}${ext}`;
+            c++;
+          }
+          fs.copyFileSync(filePath, backupPath);
+        }
+
+        fs.writeFileSync(filePath, patcher.getBuffer());
+
+        results.push({
+          name: path.basename(filePath),
+          status: 'patched',
+          backupPath
+        });
+
+        log.info(`Batch patched: ${filePath}`);
+
+      } catch (err) {
+        log.error(`Batch patch error for ${filePath}:`, err);
+        results.push({ name: path.basename(filePath), status: 'error', error: err.message });
+      }
+    }
+
+    return results;
   }
 
-  getTextReport() {
-    return this.getSummary().textSummary;
-  }
-
-  async saveReport(outputPath, format = 'txt') {
-    const report = format === 'json' ? this.getJSONReport() : this.getTextReport();
-    fs.writeFileSync(outputPath, report);
-    log.info(`Report saved to: ${outputPath}`);
-  }
-
-  getProgress() {
-    return {
-      current: this.progress,
-      total: this.total,
-      percentage: Math.round((this.progress / this.total) * 100)
-    };
-  }
-
-  // Find all PE files in a directory
-  static async findPEFiles(directory, recursive = false) {
+  async findPEFiles(directory, recursive) {
     const peFiles = [];
-
     const items = fs.readdirSync(directory);
 
     for (const item of items) {
       const fullPath = path.join(directory, item);
-      const stats = fs.statSync(fullPath);
+      let stats;
+
+      try { stats = fs.statSync(fullPath); }
+      catch (e) { continue; }
 
       if (stats.isFile()) {
         const ext = path.extname(item).toLowerCase();
-        if (['.exe', '.dll', '.sys', '.ocx'].includes(ext)) {
+        if (['.exe', '.dll', '.sys', '.scr', '.ocx', '.drv', '.cpl', '.efi'].includes(ext)) {
           peFiles.push(fullPath);
         }
       } else if (stats.isDirectory() && recursive) {
-        const subFiles = await this.findPEFiles(fullPath, true);
-        peFiles.push(...subFiles);
+        peFiles.push(...(await this.findPEFiles(fullPath, true)));
       }
     }
 
@@ -275,4 +145,4 @@ class BatchProcessor {
   }
 }
 
-module.exports = BatchProcessor;
+module.exports = { BatchProcessor };

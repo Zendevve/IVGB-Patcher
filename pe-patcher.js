@@ -1,425 +1,208 @@
-const fs = require('fs');
-const path = require('path');
-const log = require('electron-log');
+const crypto = require('crypto');
 
 class PEPatcher {
-  constructor(filePath) {
-    this.filePath = filePath;
-    this.backupPath = filePath + '.backup';
-    this.buffer = null;
-    this.modified = false;
+  constructor(buffer) {
+    if (!Buffer.isBuffer(buffer)) throw new Error('PEPatcher requires a Buffer');
+    // Work on a copy of the buffer
+    this.originalBuffer = buffer;
+    this.buffer = Buffer.from(buffer);
+
+    this.peOffset = this.buffer.readUInt32LE(60);
+    this.coffOffset = this.peOffset + 4;
+    this.optOffset = this.peOffset + 24;
+    this.magic = this.buffer.readUInt16LE(this.optOffset);
+    this.dllCharOffset = this.optOffset + 70;
   }
 
-  async load() {
-    try {
-      this.buffer = fs.readFileSync(this.filePath);
-      log.info(`Loaded file for patching: ${this.filePath}`);
-      return this.buffer;
-    } catch (error) {
-      log.error('Failed to load file for patching:', error);
-      throw error;
-    }
-  }
+  applyFlagChanges(flags) {
+    const results = [];
 
-  async save() {
-    if (!this.buffer) {
-      await this.load();
-    }
-
-    try {
-      fs.writeFileSync(this.filePath, this.buffer);
-      this.modified = false;
-      log.info(`File saved: ${this.filePath}`);
-    } catch (error) {
-      log.error('Failed to save file:', error);
-      throw error;
-    }
-  }
-
-  async saveAs(newPath) {
-    if (!this.buffer) {
-      await this.load();
-    }
-
-    try {
-      fs.writeFileSync(newPath, this.buffer);
-      this.filePath = newPath;
-      this.modified = false;
-      log.info(`File saved as: ${newPath}`);
-    } catch (error) {
-      log.error('Failed to save file:', error);
-      throw error;
-    }
-  }
-
-  createBackup() {
-    try {
-      fs.copyFileSync(this.filePath, this.backupPath);
-      log.info(`Backup created: ${this.backupPath}`);
-    } catch (error) {
-      log.error('Failed to create backup:', error);
-      throw error;
-    }
-  }
-
-  restoreBackup() {
-    try {
-      if (fs.existsSync(this.backupPath)) {
-        fs.copyFileSync(this.backupPath, this.filePath);
-        this.buffer = fs.readFileSync(this.filePath);
-        log.info('Backup restored');
+    // COFF Characteristics (LAA)
+    if (flags.laa !== undefined) {
+      const chars = this.buffer.readUInt16LE(this.coffOffset + 18);
+      const isSet = (chars & 0x20) !== 0;
+      if (isSet !== flags.laa) {
+        this.buffer.writeUInt16LE(flags.laa ? (chars | 0x20) : (chars & ~0x20), this.coffOffset + 18);
+        results.push({ name: 'LARGE_ADDRESS_AWARE', changed: true, oldValue: isSet, newValue: flags.laa });
       }
-    } catch (error) {
-      log.error('Failed to restore backup:', error);
-      throw error;
-    }
-  }
-
-  // Get PE header offset
-  getPEOffset() {
-    return this.buffer.readInt32LE(60); // e_lfanew
-  }
-
-  // Get COFF header offset
-  getCOFFOffset() {
-    return this.getPEOffset() + 4;
-  }
-
-  // Get Optional header offset
-  getOptionalHeaderOffset() {
-    return this.getCOFFOffset() + 20;
-  }
-
-  // Apply Large Address Aware (LAA) flag
-  async applyLAA() {
-    await this.load();
-    this.createBackup();
-
-    const coffOffset = this.getCOFFOffset();
-    const characteristics = this.buffer.readUInt16LE(coffOffset + 18);
-
-    // Set bit 5 (IMAGE_FILE_LARGE_ADDRESS_AWARE)
-    const newCharacteristics = characteristics | 0x20;
-    this.buffer.writeUInt16LE(newCharacteristics, coffOffset + 18);
-
-    // Also update DLL characteristics in optional header
-    const optionalOffset = this.getOptionalHeaderOffset();
-    const magic = this.buffer.readUInt16LE(optionalOffset);
-
-    let dllCharOffset;
-    if (magic === 0x10b) { // PE32
-      dllCharOffset = optionalOffset + 70;
-    } else if (magic === 0x20b) { // PE32+
-      dllCharOffset = optionalOffset + 70;
     }
 
-    if (dllCharOffset) {
-      const dllChar = this.buffer.readUInt16LE(dllCharOffset);
-      // Clear high entropy VA bit and set compatible
-      const newDllChar = (dllChar & ~0x20) | 0x10; // Clear HIGH_ENTROPY_VA, set DYNAMIC_BASE
-      this.buffer.writeUInt16LE(newDllChar, dllCharOffset);
-    }
+    // DLL Characteristics
+    const dllMap = {
+      highEntropyVA: 0x0020,
+      aslr: 0x0040,
+      forceIntegrity: 0x0080,
+      dep: 0x0100,
+      noSEH: 0x0400,
+      appContainer: 0x1000,
+      cfg: 0x4000,
+      terminalServerAware: 0x8000
+    };
 
-    await this.save();
-    log.info('LAA applied successfully');
-  }
+    const dllChars = this.buffer.readUInt16LE(this.dllCharOffset);
+    let newDllChars = dllChars;
 
-  // Toggle ASLR (Address Space Layout Randomization)
-  async toggleASLR() {
-    await this.load();
-    this.createBackup();
-
-    const optionalOffset = this.getOptionalHeaderOffset();
-    const magic = this.buffer.readUInt16LE(optionalOffset);
-
-    let dllCharOffset;
-    if (magic === 0x10b) { // PE32
-      dllCharOffset = optionalOffset + 70;
-    } else if (magic === 0x20b) { // PE32+
-      dllCharOffset = optionalOffset + 70;
-    } else {
-      throw new Error('Unknown PE format');
-    }
-
-    const dllChar = this.buffer.readUInt16LE(dllCharOffset);
-
-    // Toggle bit 6 (IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE)
-    const newDllChar = dllChar ^ 0x40;
-    this.buffer.writeUInt16LE(newDllChar, dllCharOffset);
-
-    await this.save();
-    log.info(`ASLR ${(newDllChar & 0x40) ? 'enabled' : 'disabled'}`);
-  }
-
-  // Toggle DEP (Data Execution Prevention)
-  async toggleDEP() {
-    await this.load();
-    this.createBackup();
-
-    const optionalOffset = this.getOptionalHeaderOffset();
-    const magic = this.buffer.readUInt16LE(optionalOffset);
-
-    let dllCharOffset;
-    if (magic === 0x10b) { // PE32
-      dllCharOffset = optionalOffset + 70;
-    } else if (magic === 0x20b) { // PE32+
-      dllCharOffset = optionalOffset + 70;
-    } else {
-      throw new Error('Unknown PE format');
-    }
-
-    const dllChar = this.buffer.readUInt16LE(dllCharOffset);
-
-    // Toggle bit 8 (IMAGE_DLLCHARACTERISTICS_NX_COMPAT)
-    const newDllChar = dllChar ^ 0x100;
-    this.buffer.writeUInt16LE(newDllChar, dllCharOffset);
-
-    await this.save();
-    log.info(`DEP ${(newDllChar & 0x100) ? 'enabled' : 'disabled'}`);
-  }
-
-  // Toggle CFG (Control Flow Guard)
-  async toggleCFG() {
-    await this.load();
-    this.createBackup();
-
-    const optionalOffset = this.getOptionalHeaderOffset();
-    const magic = this.buffer.readUInt16LE(optionalOffset);
-
-    let dllCharOffset;
-    if (magic === 0x10b) { // PE32
-      dllCharOffset = optionalOffset + 70;
-    } else if (magic === 0x20b) { // PE32+
-      dllCharOffset = optionalOffset + 70;
-    } else {
-      throw new Error('Unknown PE format');
-    }
-
-    const dllChar = this.buffer.readUInt16LE(dllCharOffset);
-
-    // Toggle bit 14 (IMAGE_DLLCHARACTERISTICS_GUARD_CF)
-    const newDllChar = dllChar ^ 0x4000;
-    this.buffer.writeUInt16LE(newDllChar, dllCharOffset);
-
-    await this.save();
-    log.info(`CFG ${(newDllChar & 0x4000) ? 'enabled' : 'disabled'}`);
-  }
-
-  // Remove all security features
-  async removeSecurity() {
-    await this.load();
-    this.createBackup();
-
-    const optionalOffset = this.getOptionalHeaderOffset();
-    const magic = this.buffer.readUInt16LE(optionalOffset);
-
-    let dllCharOffset;
-    if (magic === 0x10b) {
-      dllCharOffset = optionalOffset + 70;
-    } else if (magic === 0x20b) {
-      dllCharOffset = optionalOffset + 70;
-    }
-
-    if (dllCharOffset) {
-      const dllChar = this.buffer.readUInt16LE(dllCharOffset);
-      // Clear security bits: ASLR, DEP, CFG, High Entropy VA
-      const newDllChar = dllChar & ~0x4040 & ~0x100 & ~0x4000;
-      this.buffer.writeUInt16LE(newDllChar, dllCharOffset);
-    }
-
-    // Also remove LAA from COFF characteristics
-    const coffOffset = this.getCOFFOffset();
-    const characteristics = this.buffer.readUInt16LE(coffOffset + 18);
-    const newCharacteristics = characteristics & ~0x20;
-    this.buffer.writeUInt16LE(newCharacteristics, coffOffset + 18);
-
-    await this.save();
-    log.info('All security features removed');
-  }
-
-  // Strip unwanted sections
-  async stripSections(sectionNames) {
-    await this.load();
-    this.createBackup();
-
-    const coffOffset = this.getCOFFOffset();
-    const numSections = this.buffer.readUInt16LE(coffOffset + 2);
-    const optionalOffset = this.getOptionalHeaderOffset();
-    const optionalSize = this.buffer.readUInt16LE(coffOffset + 16);
-
-    const sectionOffset = optionalOffset + optionalSize;
-    const sectionSize = 40;
-
-    const sectionsToKeep = [];
-
-    for (let i = 0; i < numSections; i++) {
-      const secOffset = sectionOffset + i * sectionSize;
-
-      // Read section name
-      let name = '';
-      for (let j = 0; j < 8; j++) {
-        const char = this.buffer.readUInt8(secOffset + j);
-        if (char !== 0) {
-          name += String.fromCharCode(char);
-        } else {
-          break;
+    for (const [key, bit] of Object.entries(dllMap)) {
+      if (flags[key] !== undefined) {
+        const isSet = (dllChars & bit) !== 0;
+        if (isSet !== flags[key]) {
+          if (flags[key]) newDllChars |= bit;
+          else newDllChars &= ~bit;
+          results.push({ name: key, changed: true, oldValue: isSet, newValue: flags[key] });
         }
       }
+    }
 
-      if (!sectionNames.includes(name.trim())) {
-        sectionsToKeep.push({
-          offset: secOffset,
-          name: name
-        });
-      } else {
-        log.info(`Stripping section: ${name}`);
+    if (dllChars !== newDllChars) {
+      this.buffer.writeUInt16LE(newDllChars, this.dllCharOffset);
+    }
+
+    return results;
+  }
+
+  recalculateChecksum() {
+    const oldSum = this.buffer.readUInt32LE(this.optOffset + 64);
+
+    // Clear checksum to 0 before calculating
+    this.buffer.writeUInt32LE(0, this.optOffset + 64);
+
+    let sum = 0n;
+    const len = this.buffer.length;
+
+    // Read 16-bit words (pad with 0 if odd length)
+    for (let i = 0; i < len; i += 2) {
+      let word = this.buffer[i];
+      if (i + 1 < len) word |= (this.buffer[i + 1] << 8);
+
+      sum += BigInt(word);
+      if (sum > 0xFFFFFFFFn) {
+        sum = (sum & 0xFFFFFFFFn) + (sum >> 32n);
       }
     }
 
-    // Would need to update section table and remove data - simplified here
-    await this.save();
-    log.info('Section stripping complete');
+    // Fold to 16 bits
+    sum = (sum & 0xFFFFn) + (sum >> 16n);
+    sum = (sum + (sum >> 16n)) & 0xFFFFn;
+
+    const newSum = Number(sum) + len;
+
+    // Write new checksum
+    this.buffer.writeUInt32LE(newSum, this.optOffset + 64);
+
+    return { old: oldSum, new: newSum };
   }
 
-  // Modify entry point
-  async setEntryPoint(newEntryPoint) {
-    await this.load();
-    this.createBackup();
+  getHexDiff() {
+    const changes = [];
+    const changedOffsets = [];
+    const len = Math.max(this.originalBuffer.length, this.buffer.length);
 
-    const optionalOffset = this.getOptionalHeaderOffset();
-    const magic = this.buffer.readUInt16LE(optionalOffset);
+    for (let i = 0; i < len; i++) {
+      const ob = i < this.originalBuffer.length ? this.originalBuffer[i] : null;
+      const nb = i < this.buffer.length ? this.buffer[i] : null;
 
-    let entryOffset;
-    if (magic === 0x10b) { // PE32
-      entryOffset = optionalOffset + 16;
-    } else if (magic === 0x20b) { // PE32+
-      entryOffset = optionalOffset + 16;
-    }
-
-    this.buffer.writeUInt32LE(newEntryPoint, entryOffset);
-
-    await this.save();
-    log.info(`Entry point set to: 0x${newEntryPoint.toString(16)}`);
-  }
-
-  // Update Image Base
-  async setImageBase(newImageBase) {
-    await this.load();
-    this.createBackup();
-
-    const optionalOffset = this.getOptionalHeaderOffset();
-    const magic = this.buffer.readUInt16LE(optionalOffset);
-
-    if (magic === 0x10b) { // PE32
-      this.buffer.writeUInt32LE(newImageBase, optionalOffset + 28);
-    } else if (magic === 0x20b) { // PE32+
-      this.buffer.writeBigUInt64LE(BigInt(newImageBase), optionalOffset + 24);
-    }
-
-    await this.save();
-    log.info(`Image base set to: 0x${newImageBase.toString(16)}`);
-  }
-
-  // Update Subsystem
-  async setSubsystem(subsystem) {
-    await this.load();
-    this.createBackup();
-
-    const optionalOffset = this.getOptionalHeaderOffset();
-    const magic = this.buffer.readUInt16LE(optionalOffset);
-
-    let subsystemOffset;
-    if (magic === 0x10b) {
-      subsystemOffset = optionalOffset + 68;
-    } else if (magic === 0x20b) {
-      subsystemOffset = optionalOffset + 68;
-    }
-
-    this.buffer.writeUInt16LE(subsystem, subsystemOffset);
-
-    await this.save();
-    log.info(`Subsystem set to: ${subsystem}`);
-  }
-
-  // Add or update resource
-  async updateResource(resourceType, resourceData) {
-    await this.load();
-    // Resource updates would go here
-    await this.save();
-    log.info('Resource update complete');
-  }
-
-  // Sign the PE file (placeholder - would need proper signing)
-  async sign(certificate) {
-    await this.load();
-    this.createBackup();
-
-    // This is a placeholder - actual signing requires Windows APIs
-    // or a proper code signing solution
-    log.warn('Code signing not implemented - this is a placeholder');
-
-    await this.save();
-  }
-
-  // Verify PE integrity
-  async verifyIntegrity() {
-    await this.load();
-
-    const issues = [];
-
-    // Check DOS header
-    const dosMagic = this.buffer.readUInt16LE(0);
-    if (dosMagic !== 0x5A4D) {
-      issues.push('Invalid DOS header');
-    }
-
-    // Check PE signature
-    const peOffset = this.buffer.readInt32LE(60);
-    const peSig = this.buffer.readUInt32LE(peOffset);
-    if (peSig !== 0x00004550) {
-      issues.push('Invalid PE signature');
-    }
-
-    // Check optional header magic
-    const optionalOffset = this.getOptionalHeaderOffset();
-    const magic = this.buffer.readUInt16LE(optionalOffset);
-    if (magic !== 0x10b && magic !== 0x20b) {
-      issues.push('Invalid optional header magic');
+      if (ob !== nb) {
+        changes.push({
+          offset: i,
+          offsetHex: '0x' + i.toString(16).toUpperCase().padStart(8, '0'),
+          oldHex: ob !== null ? ob.toString(16).toUpperCase().padStart(2, '0') : '--',
+          newHex: nb !== null ? nb.toString(16).toUpperCase().padStart(2, '0') : '--',
+          description: this.getChangeDescription(i)
+        });
+        changedOffsets.push(i);
+      }
     }
 
     return {
-      valid: issues.length === 0,
-      issues: issues
+      totalChangedBytes: changes.length,
+      changes,
+      blocks: this.groupDiffBlocks(changedOffsets)
     };
   }
 
-  // Get current flags
-  async getSecurityFlags() {
-    await this.load();
+  getChangeDescription(offset) {
+    if (offset === this.coffOffset + 18 || offset === this.coffOffset + 19) return 'COFF Characteristics';
+    if (offset === this.dllCharOffset || offset === this.dllCharOffset + 1) return 'DLL Characteristics';
+    if (offset >= this.optOffset + 64 && offset < this.optOffset + 68) return 'PE Checksum';
+    return 'Unknown';
+  }
 
-    const coffOffset = this.getCOFFOffset();
-    const characteristics = this.buffer.readUInt16LE(coffOffset + 18);
+  groupDiffBlocks(changedOffsets) {
+    if (!changedOffsets.length) return [];
 
-    const optionalOffset = this.getOptionalHeaderOffset();
-    const magic = this.buffer.readUInt16LE(optionalOffset);
+    const blocks = [];
+    let currentBlock = null;
 
-    let dllCharOffset;
-    if (magic === 0x10b) {
-      dllCharOffset = optionalOffset + 70;
-    } else if (magic === 0x20b) {
-      dllCharOffset = optionalOffset + 70;
+    // Group by 16-byte rows
+    const changedRows = new Set(changedOffsets.map(o => Math.floor(o / 16) * 16));
+    const sortedRows = Array.from(changedRows).sort((a, b) => a - b);
+
+    for (const rowOffset of sortedRows) {
+      if (!currentBlock || rowOffset > currentBlock.lastRow + 32) {
+        // Start new block if gap is > 2 rows
+        currentBlock = {
+          startRow: rowOffset,
+          lastRow: rowOffset,
+          rows: [],
+          changedOffsets: []
+        };
+        blocks.push(currentBlock);
+      } else {
+        currentBlock.lastRow = rowOffset;
+      }
+
+      // Include context rows
+      currentBlock.changedOffsets.push(...changedOffsets.filter(o => o >= rowOffset && o < rowOffset + 16));
+      currentBlock.rows.push(this.formatDiffRow(rowOffset, changedOffsets));
     }
 
-    const dllChar = this.buffer.readUInt16LE(dllCharOffset);
+    return blocks;
+  }
+
+  formatDiffRow(rowOffset, changedOffsets) {
+    const ob = this.originalBuffer;
+    const nb = this.buffer;
+    const oldHex = [], newHex = [], oldAscii = [], newAscii = [], changed = [];
+    let hasChanges = false;
+
+    for (let i = 0; i < 16; i++) {
+      const idx = rowOffset + i;
+      const o = idx < ob.length ? ob[idx] : null;
+      const n = idx < nb.length ? nb[idx] : null;
+
+      oldHex.push(o !== null ? o.toString(16).toUpperCase().padStart(2, '0') : '  ');
+      newHex.push(n !== null ? n.toString(16).toUpperCase().padStart(2, '0') : '  ');
+
+      oldAscii.push(o >= 32 && o < 127 ? String.fromCharCode(o) : '.');
+      newAscii.push(n >= 32 && n < 127 ? String.fromCharCode(n) : '.');
+
+      const isChanged = changedOffsets.includes(idx);
+      changed.push(isChanged);
+      if (isChanged) hasChanges = true;
+    }
 
     return {
-      largeAddressAware: (characteristics & 0x20) !== 0,
-      aslr: (dllChar & 0x40) !== 0,
-      dep: (dllChar & 0x100) !== 0,
-      cfg: (dllChar & 0x4000) !== 0,
-      highEntropyVA: (dllChar & 0x20) !== 0
+      offsetHex: '0x' + rowOffset.toString(16).toUpperCase().padStart(8, '0'),
+      oldHex,
+      newHex,
+      oldAscii: oldAscii.join(''),
+      newAscii: newAscii.join(''),
+      changed,
+      hasChanges
     };
+  }
+
+  getHashes() {
+    return {
+      md5: crypto.createHash('md5').update(this.buffer).digest('hex'),
+      sha1: crypto.createHash('sha1').update(this.buffer).digest('hex'),
+      sha256: crypto.createHash('sha256').update(this.buffer).digest('hex')
+    };
+  }
+
+  getBuffer() {
+    return this.buffer;
   }
 }
 
-module.exports = PEPatcher;
+module.exports = { PEPatcher };

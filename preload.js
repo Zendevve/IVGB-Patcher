@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('peAPI', {
   // Patching
   applyPatch: (fileId, flags, recalc) => ipcRenderer.invoke('apply-patch', fileId, flags, recalc),
   resetFile: (fileId) => ipcRenderer.invoke('reset-file', fileId),
+  closeFile: (fileId) => ipcRenderer.invoke('close-file', fileId),
 
   // Save
   saveFile: (fileId) => ipcRenderer.invoke('save-file', fileId),
